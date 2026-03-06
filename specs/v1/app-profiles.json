@@ -1,0 +1,265 @@
+{
+  "schema_version": "1.0.0",
+  "updated_at": "2026-03-05",
+  "profiles": [
+    {
+      "app_id": "telegram-desktop",
+      "display_name": "Telegram Desktop",
+      "tier": "supported",
+      "distribution": ["direct-download"],
+      "tested_versions": ["macOS 13+", "Telegram 5.x"],
+      "process_names": ["Telegram"],
+      "source_paths": [
+        "~/Library/Application Support/Telegram Desktop"
+      ],
+      "target_path_template": "{target_root}/AppData/Telegram Desktop",
+      "precheck_rules": {
+        "require_process_stopped": true,
+        "require_full_disk_access": true,
+        "allow_bootstrap_if_source_missing": true
+      },
+      "health_checks": [
+        {
+          "type": "is_symlink",
+          "path": "~/Library/Application Support/Telegram Desktop"
+        },
+        {
+          "type": "target_exists",
+          "path": "{target_root}/AppData/Telegram Desktop"
+        },
+        {
+          "type": "rw_probe",
+          "path": "{target_root}/AppData/Telegram Desktop"
+        }
+      ],
+      "rollback_rules": {
+        "remove_symlink_first": true,
+        "restore_backup_dir": true,
+        "cleanup_incomplete_target": true
+      },
+      "notes": "迁移前必须完全退出应用。首次引导模式可在源路径缺失时直接初始化目标并创建软链接。"
+    },
+    {
+      "app_id": "jetbrains-caches",
+      "display_name": "JetBrains Caches",
+      "tier": "supported",
+      "distribution": ["all"],
+      "tested_versions": ["macOS 13+", "JetBrains 2023+"],
+      "process_names": ["idea", "goland", "pycharm", "webstorm", "clion", "rubymine"],
+      "source_paths": [
+        "~/Library/Caches/JetBrains"
+      ],
+      "target_path_template": "{target_root}/AppData/JetBrains/Caches",
+      "precheck_rules": {
+        "require_process_stopped": true,
+        "require_full_disk_access": true,
+        "allow_bootstrap_if_source_missing": true
+      },
+      "health_checks": [
+        {
+          "type": "is_symlink",
+          "path": "~/Library/Caches/JetBrains"
+        },
+        {
+          "type": "target_exists",
+          "path": "{target_root}/AppData/JetBrains/Caches"
+        },
+        {
+          "type": "rw_probe",
+          "path": "{target_root}/AppData/JetBrains/Caches"
+        }
+      ],
+      "rollback_rules": {
+        "remove_symlink_first": true,
+        "restore_backup_dir": true,
+        "cleanup_incomplete_target": true
+      },
+      "notes": "缓存目录业务风险低，适合作为 V1 首批 Supported。"
+    },
+    {
+      "app_id": "xcode-derived-data",
+      "display_name": "Xcode DerivedData",
+      "tier": "supported",
+      "distribution": ["all"],
+      "tested_versions": ["macOS 13+", "Xcode 15+"],
+      "process_names": ["Xcode"],
+      "source_paths": [
+        "~/Library/Developer/Xcode/DerivedData"
+      ],
+      "target_path_template": "{target_root}/AppData/Xcode/DerivedData",
+      "precheck_rules": {
+        "require_process_stopped": true,
+        "require_full_disk_access": true,
+        "allow_bootstrap_if_source_missing": true
+      },
+      "health_checks": [
+        {
+          "type": "is_symlink",
+          "path": "~/Library/Developer/Xcode/DerivedData"
+        },
+        {
+          "type": "target_exists",
+          "path": "{target_root}/AppData/Xcode/DerivedData"
+        },
+        {
+          "type": "rw_probe",
+          "path": "{target_root}/AppData/Xcode/DerivedData"
+        }
+      ],
+      "rollback_rules": {
+        "remove_symlink_first": true,
+        "restore_backup_dir": true,
+        "cleanup_incomplete_target": true
+      },
+      "notes": "DerivedData 可重建，作为首批 Supported 风险可控。"
+    },
+    {
+      "app_id": "wechat-non-mas",
+      "display_name": "WeChat (Non-MAS)",
+      "tier": "experimental",
+      "distribution": ["direct-download"],
+      "tested_versions": ["macOS 13+", "WeChat 4.x"],
+      "process_names": ["WeChat"],
+      "source_paths": [
+        "~/Library/Containers/com.tencent.xinWeChat"
+      ],
+      "target_path_template": "{target_root}/AppData/WeChat",
+      "precheck_rules": {
+        "require_process_stopped": true,
+        "require_full_disk_access": true,
+        "allow_bootstrap_if_source_missing": false,
+        "require_experimental_confirmation": true
+      },
+      "health_checks": [
+        {
+          "type": "is_symlink",
+          "path": "~/Library/Containers/com.tencent.xinWeChat"
+        },
+        {
+          "type": "target_exists",
+          "path": "{target_root}/AppData/WeChat"
+        },
+        {
+          "type": "rw_probe",
+          "path": "{target_root}/AppData/WeChat"
+        }
+      ],
+      "rollback_rules": {
+        "remove_symlink_first": true,
+        "restore_backup_dir": true,
+        "cleanup_incomplete_target": true
+      },
+      "notes": "容器路径受分发来源和系统版本影响，必须二次确认。"
+    },
+    {
+      "app_id": "wechat-file-provider-extension",
+      "display_name": "WeChat File Provider Extension",
+      "tier": "experimental",
+      "distribution": ["direct-download"],
+      "tested_versions": ["macOS 13+", "WeChat 4.x"],
+      "process_names": ["WeChat"],
+      "source_paths": [
+        "~/Library/Containers/com.tencent.xinWeChat.WeChatFileProviderExtension"
+      ],
+      "target_path_template": "{target_root}/AppData/WeChat/WeChatFileProviderExtension",
+      "precheck_rules": {
+        "require_process_stopped": true,
+        "require_full_disk_access": true,
+        "allow_bootstrap_if_source_missing": false,
+        "require_experimental_confirmation": true
+      },
+      "health_checks": [
+        {
+          "type": "is_symlink",
+          "path": "~/Library/Containers/com.tencent.xinWeChat.WeChatFileProviderExtension"
+        },
+        {
+          "type": "target_exists",
+          "path": "{target_root}/AppData/WeChat/WeChatFileProviderExtension"
+        },
+        {
+          "type": "rw_probe",
+          "path": "{target_root}/AppData/WeChat/WeChatFileProviderExtension"
+        }
+      ],
+      "rollback_rules": {
+        "remove_symlink_first": true,
+        "restore_backup_dir": true,
+        "cleanup_incomplete_target": true
+      },
+      "notes": "微信文件扩展容器，建议与主容器联动迁移。"
+    },
+    {
+      "app_id": "wechat-mac-share-extension",
+      "display_name": "WeChat Mac Share Extension",
+      "tier": "experimental",
+      "distribution": ["direct-download"],
+      "tested_versions": ["macOS 13+", "WeChat 4.x"],
+      "process_names": ["WeChat"],
+      "source_paths": [
+        "~/Library/Containers/com.tencent.xinWeChat.WeChatMacShare"
+      ],
+      "target_path_template": "{target_root}/AppData/WeChat/WeChatMacShare",
+      "precheck_rules": {
+        "require_process_stopped": true,
+        "require_full_disk_access": true,
+        "allow_bootstrap_if_source_missing": false,
+        "require_experimental_confirmation": true
+      },
+      "health_checks": [
+        {
+          "type": "is_symlink",
+          "path": "~/Library/Containers/com.tencent.xinWeChat.WeChatMacShare"
+        },
+        {
+          "type": "target_exists",
+          "path": "{target_root}/AppData/WeChat/WeChatMacShare"
+        },
+        {
+          "type": "rw_probe",
+          "path": "{target_root}/AppData/WeChat/WeChatMacShare"
+        }
+      ],
+      "rollback_rules": {
+        "remove_symlink_first": true,
+        "restore_backup_dir": true,
+        "cleanup_incomplete_target": true
+      },
+      "notes": "微信分享扩展容器，建议与主容器联动迁移。"
+    },
+    {
+      "app_id": "mas-sandbox-containers",
+      "display_name": "MAS Sandbox Containers",
+      "tier": "blocked",
+      "distribution": ["mac-app-store"],
+      "tested_versions": ["macOS 13+"],
+      "process_names": [],
+      "source_paths": [
+        "~/Library/Containers/*"
+      ],
+      "target_path_template": "",
+      "precheck_rules": {
+        "blocked_reason": "sandbox-policy-risk"
+      },
+      "health_checks": [],
+      "rollback_rules": {},
+      "notes": "默认禁止软链接迁移。"
+    },
+    {
+      "app_id": "docker-desktop-data-root",
+      "display_name": "Docker Desktop Data Root",
+      "tier": "blocked",
+      "distribution": ["all"],
+      "tested_versions": ["macOS 13+", "Docker Desktop 4.x"],
+      "process_names": ["Docker Desktop", "com.docker.backend"],
+      "source_paths": [],
+      "target_path_template": "",
+      "precheck_rules": {
+        "blocked_reason": "must-use-native-data-root"
+      },
+      "health_checks": [],
+      "rollback_rules": {},
+      "notes": "V1 不支持软链接迁移，需走 Docker 原生 data-root 方案。"
+    }
+  ]
+}

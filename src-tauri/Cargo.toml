@@ -1,0 +1,22 @@
+[package]
+name = "disk-relocator"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", features = ["clock"] }
+fs2 = "0.4"
+notify = "6"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.37"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.6.0"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
