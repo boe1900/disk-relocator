@@ -20,6 +20,11 @@ on:
         required: true
         default: false
         type: boolean
+      sign_and_notarize:
+        description: "Enable paid mode: Apple Developer signing + notarization"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -36,6 +41,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       draft: ${{ steps.meta.outputs.draft }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
+      sign_and_notarize: ${{ steps.meta.outputs.sign_and_notarize }}
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
@@ -44,6 +50,8 @@ jobs:
       - name: Resolve release metadata
         id: meta
         shell: bash
+        env:
+          SIGN_SWITCH_REPO: ${{ vars.RELEASE_SIGN_AND_NOTARIZE }}
         run: |
           set -euo pipefail
 
@@ -51,6 +59,7 @@ jobs:
             tag="${{ inputs.tag_name }}"
             draft="${{ inputs.release_draft }}"
             prerelease="${{ inputs.prerelease }}"
+            sign_and_notarize="${{ inputs.sign_and_notarize }}"
           else
             tag="${GITHUB_REF_NAME}"
             draft="false"
@@ -59,6 +68,17 @@ jobs:
             else
               prerelease="false"
             fi
+            sign_and_notarize="${SIGN_SWITCH_REPO:-false}"
+          fi
+
+          if [[ -z "${sign_and_notarize}" ]]; then
+            sign_and_notarize="false"
+          fi
+
+          if [[ "${sign_and_notarize}" != "true" && "${sign_and_notarize}" != "false" ]]; then
+            echo "Invalid sign switch value: ${sign_and_notarize}" >&2
+            echo "Expected: true or false (workflow input or repo variable RELEASE_SIGN_AND_NOTARIZE)." >&2
+            exit 1
           fi
 
           if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
@@ -70,6 +90,7 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "draft=${draft}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "sign_and_notarize=${sign_and_notarize}" >> "$GITHUB_OUTPUT"
 
       - name: Validate version alignment
         id: version
@@ -134,11 +155,85 @@ jobs:
       - name: Run release gate
         run: npm run check:release
 
+      - name: Validate macOS signing and notarization secrets
+        if: ${{ needs.prepare.outputs.sign_and_notarize == 'true' }}
+        id: apple-secrets
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${APPLE_CERTIFICATE}" || -z "${APPLE_CERTIFICATE_PASSWORD}" ]]; then
+            echo "::error::Missing APPLE_CERTIFICATE or APPLE_CERTIFICATE_PASSWORD secret for macOS code signing."
+            exit 1
+          fi
+
+          if [[ -z "${APPLE_SIGNING_IDENTITY}" ]]; then
+            echo "::warning::APPLE_SIGNING_IDENTITY is not set; Tauri will infer identity from APPLE_CERTIFICATE."
+          fi
+
+          has_api="false"
+          has_apple_id="false"
+
+          if [[ -n "${APPLE_API_KEY}" || -n "${APPLE_API_ISSUER}" || -n "${APPLE_API_KEY_P8}" ]]; then
+            if [[ -z "${APPLE_API_KEY}" || -z "${APPLE_API_ISSUER}" || -z "${APPLE_API_KEY_P8}" ]]; then
+              echo "::error::For API key notarization, APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_KEY_P8 must all be set."
+              exit 1
+            fi
+
+            api_key_path="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY}.p8"
+            if [[ "${APPLE_API_KEY_P8}" == *"\\n"* ]]; then
+              printf '%b' "${APPLE_API_KEY_P8}" > "${api_key_path}"
+            else
+              printf '%s' "${APPLE_API_KEY_P8}" > "${api_key_path}"
+            fi
+            chmod 600 "${api_key_path}"
+
+            echo "notary_mode=api_key" >> "$GITHUB_OUTPUT"
+            echo "apple_api_key_path=${api_key_path}" >> "$GITHUB_OUTPUT"
+            has_api="true"
+          fi
+
+          if [[ -n "${APPLE_ID}" || -n "${APPLE_PASSWORD}" || -n "${APPLE_TEAM_ID}" ]]; then
+            if [[ -z "${APPLE_ID}" || -z "${APPLE_PASSWORD}" || -z "${APPLE_TEAM_ID}" ]]; then
+              echo "::error::For Apple ID notarization, APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID must all be set."
+              exit 1
+            fi
+            has_apple_id="true"
+          fi
+
+          if [[ "${has_api}" == "true" && "${has_apple_id}" == "true" ]]; then
+            echo "::warning::Both API key and Apple ID notarization secrets are present. API key auth will be used."
+          elif [[ "${has_api}" == "false" && "${has_apple_id}" == "false" ]]; then
+            echo "::error::Missing notarization credentials. Provide either (APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_P8) or (APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID)."
+            exit 1
+          elif [[ "${has_apple_id}" == "true" ]]; then
+            echo "notary_mode=apple_id" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and upload release assets
         id: tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_TEAM_ID: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_ID: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'apple_id' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'apple_id' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'api_key' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'api_key' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_PATH: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'api_key' && steps.apple-secrets.outputs.apple_api_key_path || '' }}
         with:
           projectPath: .
           tagName: ${{ needs.prepare.outputs.tag }}
@@ -150,6 +245,11 @@ jobs:
           releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           args: --target aarch64-apple-darwin --bundles dmg
+
+      - name: Cleanup notarization key file
+        if: ${{ always() && needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.apple_api_key_path != '' }}
+        shell: bash
+        run: rm -f "${{ steps.apple-secrets.outputs.apple_api_key_path }}"
 
       - name: Ensure dmg exists
         shell: bash
@@ -180,5 +280,6 @@ jobs:
             echo "- version: \`${{ needs.prepare.outputs.version }}\`"
             echo "- release draft: \`${{ needs.prepare.outputs.draft }}\`"
             echo "- prerelease: \`${{ needs.prepare.outputs.prerelease }}\`"
+            echo "- sign and notarize: \`${{ needs.prepare.outputs.sign_and_notarize }}\`"
             echo "- release url: ${{ steps.tauri.outputs.releaseHtmlUrl }}"
           } >> "$GITHUB_STEP_SUMMARY"

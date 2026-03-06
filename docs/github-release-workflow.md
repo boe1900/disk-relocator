@@ -3,6 +3,41 @@
 本文描述仓库内 `Release` GitHub Actions 工作流的使用方式。  
 当前目标是自动发布 **macOS Apple Silicon (`aarch64`) 的 `.dmg` 安装包**。
 
+## 发布模式（免费/付费）
+
+Release workflow 支持两种模式：
+
+1. 免费模式（默认）：
+   - 不做 Apple Developer 签名与公证。
+   - 可正常产出 `.dmg`，但用户安装会触发 Gatekeeper 提示（需右键打开或去隔离属性）。
+2. 付费模式（开关开启）：
+   - 执行 `Developer ID` 签名 + Apple Notarization（公证）。
+   - 更适合公开分发。
+
+## 付费模式开关
+
+你可以用任一方式开启付费模式：
+
+1. 手动触发 `workflow_dispatch` 时，设置 `sign_and_notarize=true`。
+2. 仓库变量 `RELEASE_SIGN_AND_NOTARIZE=true`（用于 tag push 自动发布）。
+
+未开启时即为免费模式。
+
+## 付费模式所需 Secrets
+
+仅在 `sign_and_notarize=true` 时需要配置；否则不需要。
+
+1. 必填（签名）：
+   - `APPLE_CERTIFICATE`：`Developer ID Application` 证书导出的 `.p12` 内容（base64）
+   - `APPLE_CERTIFICATE_PASSWORD`：`.p12` 密码
+2. 可选但推荐（签名身份）：
+   - `APPLE_SIGNING_IDENTITY`：例如 `Developer ID Application: Your Name (TEAMID1234)`
+3. 公证（二选一）：
+   - API Key 模式（推荐 CI）：`APPLE_API_KEY` + `APPLE_API_ISSUER` + `APPLE_API_KEY_P8`
+   - Apple ID 模式：`APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`
+
+注意：如果两套公证凭据都配置，workflow 会优先使用 API Key 模式。
+
 ## 触发方式
 
 1. 自动触发：推送符合 `v*` 的 tag（例如 `v0.1.0`）。
@@ -10,6 +45,7 @@
    - `tag_name`（必填，例：`v0.1.0`）
    - `release_draft`（是否草稿）
    - `prerelease`（是否预发布）
+   - `sign_and_notarize`（是否开启签名与公证，默认 `false`）
 
 ## 发布前校验（工作流内自动执行）
 
@@ -49,3 +85,4 @@
 1. 版本号不同步：tag 与三处 version 不一致。
 2. 目标架构错误：非 Apple Silicon 目标不会在本流程中产出。
 3. 门禁失败：`check:release` 任何一步失败都会阻断发布。
+4. 付费模式开启但 secrets 缺失或不完整：workflow 会在打包前直接报错退出。
