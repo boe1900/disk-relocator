@@ -38,10 +38,6 @@ fn error(
     }
 }
 
-fn path_as_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
-
 fn remove_path(path: &Path) -> std::io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || metadata.is_file() {
@@ -53,19 +49,34 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
+fn should_skip_unreadable_container_metadata(source: &Path, err: &std::io::Error) -> bool {
+    let is_metadata = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name == ".com.apple.containermanagerd.metadata.plist")
+        .unwrap_or(false);
+    if !is_metadata {
+        return false;
+    }
+
+    err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(1)
+}
+
 fn copy_recursive(source: &Path, target: &Path) -> std::io::Result<u64> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            format!("symlink entry is not supported: {}", path_as_string(source)),
-        ));
+        return Ok(0);
     }
     if metadata.is_file() {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(source, target)?;
+        if let Err(err) = fs::copy(source, target) {
+            if should_skip_unreadable_container_metadata(source, &err) {
+                return Ok(0);
+            }
+            return Err(err);
+        }
         return Ok(metadata.len());
     }
     if !metadata.is_dir() {
@@ -382,6 +393,8 @@ pub fn rollback_migration_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
     #[test]
@@ -497,6 +510,66 @@ mod tests {
 
         let err = copy_source_to_temp(&source_path, &temp_path).expect_err("expect missing source");
         assert_eq!(err.code, "PRECHECK_SOURCE_NOT_FOUND");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_source_to_temp_skips_symlink_entries() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        fs::create_dir_all(&source_path).expect("create source");
+        fs::write(source_path.join("a.txt"), b"hello").expect("write source file");
+        std::os::unix::fs::symlink(source_path.join("a.txt"), source_path.join("link.txt"))
+            .expect("create source symlink");
+
+        let temp_path = dir.path().join("target.tmp");
+        let copy_result = copy_source_to_temp(&source_path, &temp_path).expect("copy");
+        assert_eq!(copy_result.copied_bytes, 5);
+        assert!(temp_path.join("a.txt").exists());
+        assert!(!temp_path.join("link.txt").exists());
+
+        let verify = verify_source_and_temp(&source_path, &temp_path).expect("verify");
+        assert_eq!(verify.source_size_bytes, verify.temp_size_bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_source_to_temp_skips_unreadable_container_metadata_file() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        fs::create_dir_all(&source_path).expect("create source");
+        fs::write(source_path.join("a.txt"), b"hello").expect("write source file");
+
+        let metadata_path = source_path.join(".com.apple.containermanagerd.metadata.plist");
+        fs::write(&metadata_path, b"blocked").expect("write metadata file");
+        fs::set_permissions(&metadata_path, fs::Permissions::from_mode(0o000))
+            .expect("set metadata permissions");
+
+        let temp_path = dir.path().join("target.tmp");
+        let copy_result = copy_source_to_temp(&source_path, &temp_path).expect("copy");
+        assert_eq!(copy_result.copied_bytes, 5);
+        assert!(temp_path.join("a.txt").exists());
+        assert!(!temp_path
+            .join(".com.apple.containermanagerd.metadata.plist")
+            .exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_source_to_temp_still_fails_on_other_unreadable_files() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        fs::create_dir_all(&source_path).expect("create source");
+        fs::write(source_path.join("a.txt"), b"hello").expect("write source file");
+
+        let blocked_path = source_path.join("blocked.bin");
+        fs::write(&blocked_path, b"blocked").expect("write blocked file");
+        fs::set_permissions(&blocked_path, fs::Permissions::from_mode(0o000))
+            .expect("set blocked permissions");
+
+        let temp_path = dir.path().join("target.tmp");
+        let err = copy_source_to_temp(&source_path, &temp_path).expect_err("copy should fail");
+        assert_eq!(err.code, "MIGRATE_COPY_FAILED");
     }
 
     #[test]
