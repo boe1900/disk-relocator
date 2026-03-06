@@ -49,17 +49,23 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn should_skip_unreadable_container_metadata(source: &Path, err: &std::io::Error) -> bool {
-    let is_metadata = source
-        .file_name()
+fn is_container_metadata_file(path: &Path) -> bool {
+    path.file_name()
         .and_then(|name| name.to_str())
         .map(|name| name == ".com.apple.containermanagerd.metadata.plist")
-        .unwrap_or(false);
-    if !is_metadata {
+        .unwrap_or(false)
+}
+
+fn is_permission_denied_error(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(1)
+}
+
+fn should_skip_unreadable_container_metadata(source: &Path, err: &std::io::Error) -> bool {
+    if !is_container_metadata_file(source) {
         return false;
     }
 
-    err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(1)
+    is_permission_denied_error(err)
 }
 
 fn copy_recursive(source: &Path, target: &Path) -> std::io::Result<u64> {
@@ -100,6 +106,14 @@ fn size_recursive(path: &Path) -> std::io::Result<u64> {
         return Ok(0);
     }
     if metadata.is_file() {
+        if is_container_metadata_file(path) {
+            if let Err(err) = fs::File::open(path) {
+                if is_permission_denied_error(&err) {
+                    return Ok(0);
+                }
+                return Err(err);
+            }
+        }
         return Ok(metadata.len());
     }
     if !metadata.is_dir() {
@@ -552,6 +566,27 @@ mod tests {
         assert!(!temp_path
             .join(".com.apple.containermanagerd.metadata.plist")
             .exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_source_and_temp_skips_unreadable_container_metadata_file() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        fs::create_dir_all(&source_path).expect("create source");
+        fs::write(source_path.join("a.txt"), b"hello").expect("write source file");
+
+        let metadata_path = source_path.join(".com.apple.containermanagerd.metadata.plist");
+        fs::write(&metadata_path, b"blocked").expect("write metadata file");
+        fs::set_permissions(&metadata_path, fs::Permissions::from_mode(0o000))
+            .expect("set metadata permissions");
+
+        let temp_path = dir.path().join("target.tmp");
+        copy_source_to_temp(&source_path, &temp_path).expect("copy");
+
+        let verify = verify_source_and_temp(&source_path, &temp_path).expect("verify");
+        assert_eq!(verify.source_size_bytes, 5);
+        assert_eq!(verify.temp_size_bytes, 5);
     }
 
     #[cfg(unix)]
