@@ -801,6 +801,46 @@ fn check_target_online(target_root: &str, trace_id: &str) -> Result<(), CommandE
         return Ok(());
     }
 
+    let parent = target.parent().ok_or_else(|| {
+        precheck_error(
+            "PRECHECK_DISK_OFFLINE",
+            "target disk is offline or not mounted.",
+            trace_id,
+            true,
+            json!({ "target_root": target_root }),
+        )
+    })?;
+
+    // Avoid accidentally creating pseudo mount points directly under /Volumes.
+    if !parent.is_dir() || parent == Path::new("/Volumes") {
+        return Err(precheck_error(
+            "PRECHECK_DISK_OFFLINE",
+            "target disk is offline or not mounted.",
+            trace_id,
+            true,
+            json!({ "target_root": target_root }),
+        ));
+    }
+
+    fs::create_dir_all(target).map_err(|err| {
+        let code = if err.kind() == std::io::ErrorKind::PermissionDenied {
+            "PRECHECK_DISK_READONLY"
+        } else {
+            "PRECHECK_DISK_OFFLINE"
+        };
+        precheck_error(
+            code,
+            "failed to create target root directory.",
+            trace_id,
+            true,
+            json!({ "target_root": target_root, "error": err.to_string() }),
+        )
+    })?;
+
+    if target.is_dir() {
+        return Ok(());
+    }
+
     Err(precheck_error(
         "PRECHECK_DISK_OFFLINE",
         "target disk is offline or not mounted.",
@@ -3080,11 +3120,20 @@ mod tests {
     }
 
     #[test]
-    fn check_target_online_rejects_missing_root() {
+    fn check_target_online_creates_missing_root_when_parent_exists() {
         let dir = tempdir().expect("create temp dir");
         let missing_root = dir.path().join("missing-root");
+        check_target_online(missing_root.to_string_lossy().as_ref(), "tr_test")
+            .expect("missing target root should be auto-created");
+        assert!(missing_root.is_dir());
+    }
+
+    #[test]
+    fn check_target_online_rejects_missing_parent() {
+        let dir = tempdir().expect("create temp dir");
+        let missing_root = dir.path().join("missing-parent").join("missing-root");
         let err = check_target_online(missing_root.to_string_lossy().as_ref(), "tr_test")
-            .expect_err("missing target root should be offline");
+            .expect_err("missing parent should still be offline");
         assert_eq!(err.code, "PRECHECK_DISK_OFFLINE");
     }
 
