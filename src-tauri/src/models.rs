@@ -44,11 +44,11 @@ pub struct RollbackRequest {
     pub force: bool,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ExportLogsRequest {
+#[derive(Debug, Deserialize, Default)]
+pub struct OperationLogsRequest {
     pub relocation_id: Option<String>,
     pub trace_id: Option<String>,
-    pub output_path: Option<String>,
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +74,10 @@ pub struct AppScanPath {
 pub struct AppScanResult {
     pub app_id: String,
     pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_data_url: Option<String>,
     pub tier: String,
     pub detected_paths: Vec<AppScanPath>,
     pub running: bool,
@@ -180,13 +184,4 @@ pub struct OperationLogItem {
     pub message: Option<String>,
     pub details: Value,
     pub created_at: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ExportLogsResult {
-    pub export_trace_id: String,
-    pub relocation_id: Option<String>,
-    pub trace_id: Option<String>,
-    pub output_path: String,
-    pub exported_count: usize,
 }

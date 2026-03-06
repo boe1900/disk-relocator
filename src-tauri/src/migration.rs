@@ -346,21 +346,19 @@ pub fn rollback_migration_paths(
         }
     }
 
-    if backup_path.exists() {
-        if !source_path.exists() {
-            fs::rename(backup_path, source_path).map_err(|err| {
-                error(
-                    "ROLLBACK_RESTORE_BACKUP_FAILED",
-                    "failed to restore source path from backup.",
-                    false,
-                    json!({
-                        "backup_path": backup_path,
-                        "source_path": source_path,
-                        "error": err.to_string()
-                    }),
-                )
-            })?;
-        }
+    if backup_path.exists() && !source_path.exists() {
+        fs::rename(backup_path, source_path).map_err(|err| {
+            error(
+                "ROLLBACK_RESTORE_BACKUP_FAILED",
+                "failed to restore source path from backup.",
+                false,
+                json!({
+                    "backup_path": backup_path,
+                    "source_path": source_path,
+                    "error": err.to_string()
+                }),
+            )
+        })?;
     }
 
     if temp_path.exists() {
@@ -489,5 +487,67 @@ mod tests {
             assert!(!temp_path.exists());
             assert!(source_path.join(format!("round-{round}.txt")).exists());
         }
+    }
+
+    #[test]
+    fn copy_source_to_temp_rejects_missing_source() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("missing-source");
+        let temp_path = dir.path().join("target.tmp");
+
+        let err = copy_source_to_temp(&source_path, &temp_path).expect_err("expect missing source");
+        assert_eq!(err.code, "PRECHECK_SOURCE_NOT_FOUND");
+    }
+
+    #[test]
+    fn switch_to_symlink_rejects_existing_target_path() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        let temp_path = dir.path().join("target.tmp");
+        let target_path = dir.path().join("target");
+        let backup_path = dir.path().join("source.bak");
+
+        fs::create_dir_all(&source_path).expect("create source");
+        fs::write(source_path.join("a.txt"), b"hello").expect("write source file");
+        copy_source_to_temp(&source_path, &temp_path).expect("copy to temp");
+        fs::create_dir_all(&target_path).expect("create existing target");
+
+        let err = switch_to_symlink(&source_path, &temp_path, &target_path, &backup_path)
+            .expect_err("expect target exists failure");
+        assert_eq!(err.code, "PRECHECK_TARGET_PATH_EXISTS");
+    }
+
+    #[test]
+    fn copy_path_to_path_rejects_existing_target() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        let target_path = dir.path().join("target");
+        fs::create_dir_all(&source_path).expect("create source");
+        fs::write(source_path.join("a.txt"), b"hello").expect("write source file");
+        fs::create_dir_all(&target_path).expect("create target");
+
+        let err = copy_path_to_path(&source_path, &target_path)
+            .expect_err("expect target exists failure");
+        assert_eq!(err.code, "ROLLBACK_RESTORE_BACKUP_FAILED");
+    }
+
+    #[test]
+    fn rollback_removes_source_symlink_and_target_without_backup() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        let temp_path = dir.path().join("target.tmp");
+        let target_path = dir.path().join("target");
+        let backup_path = dir.path().join("source.bak");
+
+        fs::create_dir_all(&target_path).expect("create target");
+        fs::write(target_path.join("data.txt"), b"payload").expect("write target file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &source_path).expect("create source symlink");
+
+        rollback_migration_paths(&source_path, &temp_path, &target_path, &backup_path)
+            .expect("rollback cleanup");
+        assert!(!source_path.exists());
+        assert!(!target_path.exists());
+        assert!(!backup_path.exists());
     }
 }

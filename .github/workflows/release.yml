@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag, for example v0.1.0"
+        required: true
+        type: string
+      release_draft:
+        description: "Create as draft release"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark as prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare Release Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      draft: ${{ steps.meta.outputs.draft }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag_name }}"
+            draft="${{ inputs.release_draft }}"
+            prerelease="${{ inputs.prerelease }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            draft="false"
+            if [[ "${tag}" == *-* ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
+          fi
+
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${tag}" >&2
+            echo "Expected format: vX.Y.Z or vX.Y.Z-suffix" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "draft=${draft}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version alignment
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pkg_version="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n1)"
+          tauri_version="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -n1)"
+          cargo_version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' src-tauri/Cargo.toml | head -n1)"
+
+          if [[ -z "${pkg_version}" || -z "${tauri_version}" || -z "${cargo_version}" ]]; then
+            echo "Failed to parse version from package.json / tauri.conf.json / Cargo.toml" >&2
+            exit 1
+          fi
+
+          if [[ "${pkg_version}" != "${tauri_version}" || "${pkg_version}" != "${cargo_version}" ]]; then
+            echo "Version mismatch detected:" >&2
+            echo "  package.json: ${pkg_version}" >&2
+            echo "  tauri.conf.json: ${tauri_version}" >&2
+            echo "  Cargo.toml: ${cargo_version}" >&2
+            exit 1
+          fi
+
+          expected_tag="v${pkg_version}"
+          if [[ "${{ steps.meta.outputs.tag }}" != "${expected_tag}" ]]; then
+            echo "Tag and app version mismatch:" >&2
+            echo "  tag: ${{ steps.meta.outputs.tag }}" >&2
+            echo "  expected: ${expected_tag}" >&2
+            exit 1
+          fi
+
+          echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build And Publish macOS (Apple Silicon)
+    runs-on: macos-latest
+    needs: prepare
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Run release gate
+        run: npm run check:release
+
+      - name: Build and upload release assets
+        id: tauri
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: .
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Disk Relocator ${{ needs.prepare.outputs.tag }}"
+          releaseBody: |
+            Automated release for `${{ needs.prepare.outputs.tag }}`.
+            Built from commit `${{ github.sha }}`.
+          generateReleaseNotes: true
+          releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          args: --target aarch64-apple-darwin
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: disk-relocator-${{ needs.prepare.outputs.tag }}-macos-aarch64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/**/*
+          if-no-files-found: error
+
+      - name: Publish summary
+        shell: bash
+        run: |
+          {
+            echo "### Release Published"
+            echo ""
+            echo "- tag: \`${{ needs.prepare.outputs.tag }}\`"
+            echo "- version: \`${{ needs.prepare.outputs.version }}\`"
+            echo "- release draft: \`${{ needs.prepare.outputs.draft }}\`"
+            echo "- prerelease: \`${{ needs.prepare.outputs.prerelease }}\`"
+            echo "- release url: ${{ steps.tauri.outputs.releaseHtmlUrl }}"
+          } >> "$GITHUB_STEP_SUMMARY"

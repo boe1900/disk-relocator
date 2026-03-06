@@ -3,9 +3,9 @@ use crate::db::{
     OperationLogRecord,
 };
 use crate::models::{
-    AppScanPath, AppScanResult, CommandError, DiskStatus, ExportLogsRequest, ExportLogsResult,
-    HealthEvent, HealthEventsRequest, HealthStatus, MigrateRequest, OperationLogItem,
-    ReconcileRequest, ReconcileResult, RelocationResult, RelocationSummary, RollbackRequest,
+    AppScanPath, AppScanResult, CommandError, DiskStatus, HealthEvent, HealthEventsRequest,
+    HealthStatus, MigrateRequest, OperationLogItem, OperationLogsRequest, ReconcileRequest,
+    ReconcileResult, RelocationResult, RelocationSummary, RollbackRequest,
 };
 use crate::profiles::{self, AppProfile};
 use crate::{
@@ -17,14 +17,18 @@ use crate::{
     },
     reconcile, AppState,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use fs2::{available_space, total_space};
 use serde_json::json;
+use std::collections::{hash_map::DefaultHasher, BTreeSet};
 use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+#[cfg(target_os = "macos")]
+use std::process::Command;
+use std::time::{Instant, UNIX_EPOCH};
 use sysinfo::{ProcessesToUpdate, System};
 use tauri::State;
 use uuid::Uuid;
@@ -128,17 +132,6 @@ fn operation_log_to_item(row: OperationLogRecord) -> OperationLogItem {
     }
 }
 
-fn default_export_output_path(db: &Database, trace_id: &str) -> PathBuf {
-    let base_dir = db
-        .path()
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(std::env::temp_dir);
-    base_dir
-        .join("exports")
-        .join(format!("{trace_id}.operation-logs.json"))
-}
-
 fn health_event_to_model(row: HealthEventRecord) -> HealthEvent {
     let message = serde_json::from_str::<serde_json::Value>(&row.details_json)
         .ok()
@@ -161,6 +154,7 @@ fn health_event_to_model(row: HealthEventRecord) -> HealthEvent {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_operation_log(
     db: &Database,
     trace_id: &str,
@@ -325,13 +319,23 @@ fn detect_running_processes(profile: &AppProfile) -> Vec<String> {
     running
 }
 
-fn list_installed_app_bundle_names() -> Vec<String> {
-    let mut roots = vec![PathBuf::from("/Applications"), PathBuf::from("/System/Applications")];
+#[derive(Debug, Clone)]
+struct InstalledBundle {
+    path: PathBuf,
+    stem_lc: String,
+    bundle_id_lc: Option<String>,
+}
+
+fn list_installed_app_bundles() -> Vec<InstalledBundle> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
     if let Ok(home) = std::env::var("HOME") {
         roots.push(PathBuf::from(home).join("Applications"));
     }
 
-    let mut names = Vec::new();
+    let mut bundles = Vec::new();
     for root in roots {
         let Ok(entries) = fs::read_dir(root) else {
             continue;
@@ -344,21 +348,21 @@ fn list_installed_app_bundle_names() -> Vec<String> {
                 continue;
             }
             if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
-                names.push(stem.to_ascii_lowercase());
+                let bundle_id_lc =
+                    read_plist_string(&path.join("Contents/Info.plist"), "CFBundleIdentifier")
+                        .map(|value| value.to_ascii_lowercase());
+                bundles.push(InstalledBundle {
+                    path: path.clone(),
+                    stem_lc: stem.to_ascii_lowercase(),
+                    bundle_id_lc,
+                });
             }
         }
     }
-
-    names.sort();
-    names.dedup();
-    names
+    bundles
 }
 
-fn profile_looks_installed(profile: &AppProfile, installed_bundles: &[String]) -> bool {
-    if installed_bundles.is_empty() {
-        return false;
-    }
-
+fn profile_match_hints(profile: &AppProfile) -> Vec<String> {
     let mut hints: Vec<String> = profile
         .process_names
         .iter()
@@ -366,6 +370,12 @@ fn profile_looks_installed(profile: &AppProfile, installed_bundles: &[String]) -
         .collect();
     hints.push(profile.display_name.to_ascii_lowercase());
     hints.push(profile.app_id.to_ascii_lowercase());
+    hints.extend(
+        profile
+            .bundle_ids
+            .iter()
+            .map(|item| item.to_ascii_lowercase()),
+    );
 
     if profile.app_id == "jetbrains-caches" {
         hints.extend(
@@ -383,13 +393,262 @@ fn profile_looks_installed(profile: &AppProfile, installed_bundles: &[String]) -
             .map(str::to_string),
         );
     }
+    hints
+}
 
-    installed_bundles.iter().any(|bundle| {
-        hints.iter().any(|hint| {
-            let trimmed = hint.trim();
-            !trimmed.is_empty() && (bundle.contains(trimmed) || trimmed.contains(bundle))
+fn match_profile_bundle(
+    profile: &AppProfile,
+    installed_bundles: &[InstalledBundle],
+) -> Option<PathBuf> {
+    if installed_bundles.is_empty() {
+        return None;
+    }
+
+    if !profile.bundle_ids.is_empty() {
+        let target_bundle_ids = profile
+            .bundle_ids
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if !target_bundle_ids.is_empty() {
+            if let Some(bundle) = installed_bundles.iter().find(|bundle| {
+                bundle
+                    .bundle_id_lc
+                    .as_ref()
+                    .map(|bundle_id| target_bundle_ids.iter().any(|target| target == bundle_id))
+                    .unwrap_or(false)
+            }) {
+                return Some(bundle.path.clone());
+            }
+        }
+    }
+
+    let hints = profile_match_hints(profile);
+
+    installed_bundles
+        .iter()
+        .find(|bundle| {
+            hints.iter().any(|hint| {
+                let trimmed = hint.trim();
+                !trimmed.is_empty()
+                    && (bundle.stem_lc == trimmed
+                        || bundle.stem_lc.contains(trimmed)
+                        || trimmed.contains(&bundle.stem_lc))
+            })
         })
-    })
+        .map(|bundle| bundle.path.clone())
+}
+
+fn resolve_profile_display_name(profile: &AppProfile, bundle_path: Option<&Path>) -> String {
+    bundle_path
+        .and_then(resolve_bundle_display_name)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| profile.display_name.clone())
+}
+
+fn resolve_profile_icon_path(bundle_path: Option<&Path>) -> Option<String> {
+    bundle_path.and_then(resolve_bundle_icon_path)
+}
+
+fn read_plist_string(plist_path: &Path, key: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("/usr/libexec/PlistBuddy")
+            .arg("-c")
+            .arg(format!("Print :{key}"))
+            .arg(plist_path)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if value.is_empty() {
+            return None;
+        }
+        Some(value)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (plist_path, key);
+        None
+    }
+}
+
+fn resolve_bundle_display_name(bundle_path: &Path) -> Option<String> {
+    let info_plist = bundle_path.join("Contents/Info.plist");
+    if info_plist.is_file() {
+        if let Some(value) = read_plist_string(&info_plist, "CFBundleDisplayName") {
+            if !value.trim().is_empty() {
+                return Some(value);
+            }
+        }
+        if let Some(value) = read_plist_string(&info_plist, "CFBundleName") {
+            if !value.trim().is_empty() {
+                return Some(value);
+            }
+        }
+    }
+
+    bundle_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_string)
+}
+
+fn resolve_bundle_icon_path(bundle_path: &Path) -> Option<String> {
+    let resources = bundle_path.join("Contents/Resources");
+    if !resources.is_dir() {
+        return None;
+    }
+
+    let info_plist = bundle_path.join("Contents/Info.plist");
+    if info_plist.is_file() {
+        if let Some(icon_file) = read_plist_string(&info_plist, "CFBundleIconFile") {
+            let icon_name = icon_file.trim().trim_matches('"').to_string();
+            if !icon_name.is_empty() {
+                let mut candidates = vec![icon_name.clone()];
+                if !icon_name.to_ascii_lowercase().ends_with(".icns") {
+                    candidates.push(format!("{icon_name}.icns"));
+                }
+                for candidate in candidates {
+                    let candidate_path = resources.join(candidate);
+                    if candidate_path.is_file() {
+                        return resolve_web_icon_path(&candidate_path);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut icns_files = fs::read_dir(&resources)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("icns"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    if icns_files.is_empty() {
+        return None;
+    }
+
+    icns_files.sort();
+
+    if let Some(app_icon) = icns_files.iter().find(|path| {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|stem| stem.to_ascii_lowercase().contains("appicon"))
+            .unwrap_or(false)
+    }) {
+        return resolve_web_icon_path(app_icon);
+    }
+
+    icns_files
+        .first()
+        .map(|path| path.to_string_lossy().to_string())
+        .and_then(|path| resolve_web_icon_path(Path::new(&path)))
+}
+
+fn resolve_web_icon_path(path: &Path) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+    ) {
+        return Some(path.to_string_lossy().to_string());
+    }
+
+    if ext == "icns" {
+        return convert_icns_to_png(path).or_else(|| Some(path.to_string_lossy().to_string()));
+    }
+
+    Some(path.to_string_lossy().to_string())
+}
+
+fn cache_png_path_for_icns(icns_path: &Path) -> Option<PathBuf> {
+    let metadata = fs::metadata(icns_path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let modified_secs = modified.duration_since(UNIX_EPOCH).ok()?.as_secs();
+
+    let mut hasher = DefaultHasher::new();
+    icns_path.to_string_lossy().hash(&mut hasher);
+    modified_secs.hash(&mut hasher);
+    let digest = hasher.finish();
+
+    let cache_dir = std::env::temp_dir()
+        .join("disk-relocator")
+        .join("icon-cache");
+    fs::create_dir_all(&cache_dir).ok()?;
+    Some(cache_dir.join(format!("{digest:016x}.png")))
+}
+
+fn convert_icns_to_png(icns_path: &Path) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output_path = cache_png_path_for_icns(icns_path)?;
+        if output_path.is_file() {
+            return Some(output_path.to_string_lossy().to_string());
+        }
+
+        let status = Command::new("/usr/bin/sips")
+            .arg("-s")
+            .arg("format")
+            .arg("png")
+            .arg(icns_path)
+            .arg("--out")
+            .arg(&output_path)
+            .status()
+            .ok()?;
+
+        if !status.success() || !output_path.is_file() {
+            return None;
+        }
+        Some(output_path.to_string_lossy().to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = icns_path;
+        None
+    }
+}
+
+fn icon_mime_from_ext(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "png" => "image/png",
+        _ => "image/png",
+    }
+}
+
+fn read_icon_data_url(icon_path: &str) -> Option<String> {
+    let path = Path::new(icon_path);
+    let bytes = fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let mime = icon_mime_from_ext(path);
+    let payload = BASE64_STANDARD.encode(bytes);
+    Some(format!("data:{mime};base64,{payload}"))
 }
 
 fn list_mounted_volume_roots() -> Vec<String> {
@@ -488,6 +747,16 @@ fn check_source(
         return Err(precheck_error(
             "PRECHECK_SOURCE_IS_SYMLINK",
             "source path is already a symlink.",
+            trace_id,
+            false,
+            json!({ "source_path": source_path }),
+        ));
+    }
+
+    if !metadata.is_dir() {
+        return Err(precheck_error(
+            "PRECHECK_SOURCE_NOT_FOUND",
+            "source path is not a directory.",
             trace_id,
             false,
             json!({ "source_path": source_path }),
@@ -735,13 +1004,15 @@ fn postcheck_symlink_target(
 pub fn scan_apps() -> Result<Vec<AppScanResult>, CommandError> {
     let trace_id = new_trace_id();
     let profiles = profiles::list_profiles().map_err(|err| profile_error(&trace_id, &err))?;
-    let installed_bundles = list_installed_app_bundle_names();
+    let installed_bundles = list_installed_app_bundles();
     let now = now_iso();
     let results = profiles
         .into_iter()
         .filter_map(|profile| {
             let running = !detect_running_processes(&profile).is_empty();
-            let installed = profile_looks_installed(&profile, &installed_bundles);
+            let matched_bundle = match_profile_bundle(&profile, &installed_bundles);
+            let matched_bundle_path = matched_bundle.as_deref();
+            let installed = matched_bundle.is_some();
             let mut detected_any_path = false;
             let detected_paths = profile
                 .source_paths
@@ -779,9 +1050,15 @@ pub fn scan_apps() -> Result<Vec<AppScanResult>, CommandError> {
                 return None;
             }
 
+            let display_name = resolve_profile_display_name(&profile, matched_bundle_path);
+            let icon_path = resolve_profile_icon_path(matched_bundle_path);
+            let icon_data_url = icon_path.as_ref().and_then(|path| read_icon_data_url(path));
+
             Some(AppScanResult {
                 app_id: profile.app_id,
-                display_name: profile.display_name,
+                display_name,
+                icon_path,
+                icon_data_url,
                 tier: profile.tier,
                 detected_paths,
                 running,
@@ -865,6 +1142,63 @@ pub fn get_disk_status(state: State<'_, AppState>) -> Result<Vec<DiskStatus>, Co
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+pub fn get_system_disk_status() -> Result<DiskStatus, CommandError> {
+    let trace_id = new_trace_id();
+    let mount_point = "/".to_string();
+    let root_path = Path::new(&mount_point);
+    let is_mounted = root_path.is_dir();
+
+    let writable_base = std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root_path.to_path_buf());
+    let probe_path = writable_base.join(format!(
+        ".disk-relocator-system-disk-probe-{}",
+        Uuid::new_v4()
+    ));
+    let is_writable = match OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&probe_path)
+    {
+        Ok(mut file) => {
+            let write_ok = file.write_all(b"ok").is_ok();
+            let _ = fs::remove_file(&probe_path);
+            write_ok
+        }
+        Err(_) => false,
+    };
+
+    let free_bytes = available_space(root_path).map_err(|err| {
+        CommandError::new(
+            "DISK_STATUS_READ_FAILED",
+            "failed to read system disk free space.",
+            trace_id.clone(),
+            true,
+            json!({ "mount_point": mount_point, "error": err.to_string() }),
+        )
+    })?;
+    let total_bytes = total_space(root_path).map_err(|err| {
+        CommandError::new(
+            "DISK_STATUS_READ_FAILED",
+            "failed to read system disk total space.",
+            trace_id.clone(),
+            true,
+            json!({ "mount_point": mount_point, "error": err.to_string() }),
+        )
+    })?;
+
+    Ok(DiskStatus {
+        mount_point,
+        display_name: "System Disk".to_string(),
+        is_mounted,
+        is_writable,
+        free_bytes,
+        total_bytes,
+    })
 }
 
 #[tauri::command]
@@ -2498,72 +2832,26 @@ pub fn rollback_relocation(
 }
 
 #[tauri::command]
-pub fn export_operation_logs(
-    req: ExportLogsRequest,
+pub fn list_operation_logs(
+    req: Option<OperationLogsRequest>,
     state: State<'_, AppState>,
-) -> Result<ExportLogsResult, CommandError> {
+) -> Result<Vec<OperationLogItem>, CommandError> {
     let trace_id = new_trace_id();
-    let relocation_filter = req.relocation_id.clone();
-    let trace_filter = req.trace_id.clone();
-    let logs = state
+    let request = req.unwrap_or_default();
+    let relocation_filter = request.relocation_id.clone();
+    let trace_filter = request.trace_id.clone();
+    let limit = request.limit.unwrap_or(400).clamp(1, 5000) as usize;
+
+    let rows = state
         .db
         .list_operation_logs(relocation_filter.as_deref(), trace_filter.as_deref())
         .map_err(|err| db_error(&trace_id, "list operation logs", err))?;
-    let items: Vec<OperationLogItem> = logs.into_iter().map(operation_log_to_item).collect();
-
-    let output_path = req
-        .output_path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_export_output_path(&state.db, &trace_id));
-
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            CommandError::new(
-                "LOG_EXPORT_WRITE_FAILED",
-                "failed to create export directory.",
-                trace_id.clone(),
-                true,
-                json!({ "output_dir": parent.to_string_lossy().to_string(), "error": err.to_string() }),
-            )
-        })?;
+    let mut items: Vec<OperationLogItem> = rows.into_iter().map(operation_log_to_item).collect();
+    if items.len() > limit {
+        let start = items.len() - limit;
+        items = items.split_off(start);
     }
-
-    let payload = json!({
-        "export_trace_id": trace_id,
-        "relocation_id": relocation_filter.clone(),
-        "trace_id": trace_filter.clone(),
-        "exported_at": now_iso(),
-        "exported_count": items.len(),
-        "operation_logs": items
-    });
-
-    let serialized = serde_json::to_string_pretty(&payload).map_err(|err| {
-        CommandError::new(
-            "LOG_EXPORT_WRITE_FAILED",
-            "failed to encode operation logs export payload.",
-            trace_id.clone(),
-            false,
-            json!({ "error": err.to_string() }),
-        )
-    })?;
-
-    fs::write(&output_path, serialized).map_err(|err| {
-        CommandError::new(
-            "LOG_EXPORT_WRITE_FAILED",
-            "failed to write operation logs export file.",
-            trace_id.clone(),
-            true,
-            json!({ "output_path": output_path.to_string_lossy().to_string(), "error": err.to_string() }),
-        )
-    })?;
-
-    Ok(ExportLogsResult {
-        export_trace_id: trace_id,
-        relocation_id: relocation_filter,
-        trace_id: trace_filter,
-        output_path: output_path.to_string_lossy().to_string(),
-        exported_count: items.len(),
-    })
+    Ok(items)
 }
 
 #[tauri::command]
@@ -2639,4 +2927,464 @@ pub fn check_health(state: State<'_, AppState>) -> Result<Vec<HealthStatus>, Com
             json!({ "error": err }),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profiles::PrecheckRules;
+    use tempfile::tempdir;
+
+    #[test]
+    fn check_source_allows_missing_path_in_bootstrap_mode() {
+        let dir = tempdir().expect("create temp dir");
+        let missing = dir.path().join("missing-source");
+
+        let size = check_source(
+            "bootstrap",
+            missing.to_string_lossy().as_ref(),
+            true,
+            false,
+            "tr_test",
+        )
+        .expect("bootstrap should allow missing source path");
+
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn check_source_rejects_missing_path_in_migrate_mode() {
+        let dir = tempdir().expect("create temp dir");
+        let missing = dir.path().join("missing-source");
+
+        let err = check_source(
+            "migrate",
+            missing.to_string_lossy().as_ref(),
+            true,
+            false,
+            "tr_test",
+        )
+        .expect_err("migrate mode should reject missing source path");
+
+        assert_eq!(err.code, "PRECHECK_SOURCE_NOT_FOUND");
+    }
+
+    #[test]
+    fn check_source_rejects_file_source_path() {
+        let dir = tempdir().expect("create temp dir");
+        let file_path = dir.path().join("source-file");
+        fs::write(&file_path, b"data").expect("write source file");
+
+        let err = check_source(
+            "migrate",
+            file_path.to_string_lossy().as_ref(),
+            false,
+            false,
+            "tr_test",
+        )
+        .expect_err("file source should be rejected");
+
+        assert_eq!(err.code, "PRECHECK_SOURCE_NOT_FOUND");
+    }
+
+    #[test]
+    fn check_source_bootstrap_mode_with_existing_dir_returns_size() {
+        let dir = tempdir().expect("create temp dir");
+        let source = dir.path().join("source");
+        fs::create_dir_all(&source).expect("create source dir");
+        fs::write(source.join("payload.txt"), b"hello").expect("write payload");
+
+        let size = check_source(
+            "bootstrap",
+            source.to_string_lossy().as_ref(),
+            true,
+            false,
+            "tr_test",
+        )
+        .expect("bootstrap source with data should return size");
+        assert!(size > 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_source_rejects_symlink_source_path() {
+        use std::os::unix::fs as unix_fs;
+
+        let dir = tempdir().expect("create temp dir");
+        let target = dir.path().join("target");
+        let source = dir.path().join("source-link");
+        fs::create_dir_all(&target).expect("create target dir");
+        unix_fs::symlink(&target, &source).expect("create symlink source");
+
+        let err = check_source(
+            "migrate",
+            source.to_string_lossy().as_ref(),
+            false,
+            false,
+            "tr_test",
+        )
+        .expect_err("source symlink should be rejected");
+
+        assert_eq!(err.code, "PRECHECK_SOURCE_IS_SYMLINK");
+    }
+
+    #[test]
+    fn get_system_disk_status_returns_valid_root_metrics() {
+        let status = get_system_disk_status().expect("read system disk status");
+        assert_eq!(status.mount_point, "/");
+        assert!(status.is_mounted);
+        assert!(status.total_bytes > 0);
+        assert!(status.total_bytes >= status.free_bytes);
+    }
+
+    #[test]
+    fn target_path_uses_template_placeholder() {
+        let profile = AppProfile {
+            app_id: "wechat-non-mas".to_string(),
+            display_name: "WeChat".to_string(),
+            tier: "experimental".to_string(),
+            bundle_ids: vec![],
+            process_names: vec![],
+            source_paths: vec![],
+            target_path_template: "{target_root}/AppData/WeChat".to_string(),
+            precheck_rules: PrecheckRules::default(),
+        };
+        let target = target_path(&profile, "/Volumes/TestSSD");
+        assert_eq!(target, "/Volumes/TestSSD/AppData/WeChat");
+    }
+
+    #[test]
+    fn target_path_falls_back_to_default_layout_when_template_empty() {
+        let profile = AppProfile {
+            app_id: "custom-app".to_string(),
+            display_name: "Custom App".to_string(),
+            tier: "supported".to_string(),
+            bundle_ids: vec![],
+            process_names: vec![],
+            source_paths: vec![],
+            target_path_template: String::new(),
+            precheck_rules: PrecheckRules::default(),
+        };
+        let target = target_path(&profile, "/Volumes/External");
+        assert_eq!(target, "/Volumes/External/AppData/Custom App");
+    }
+
+    #[test]
+    fn check_available_space_rejects_insufficient_capacity() {
+        let dir = tempdir().expect("create temp dir");
+        let root = dir.path().to_string_lossy().to_string();
+
+        let err = check_available_space(&root, u64::MAX / 2, "tr_test")
+            .expect_err("should reject when required space is impossible");
+        assert_eq!(err.code, "PRECHECK_INSUFFICIENT_SPACE");
+    }
+
+    #[test]
+    fn check_target_online_rejects_missing_root() {
+        let dir = tempdir().expect("create temp dir");
+        let missing_root = dir.path().join("missing-root");
+        let err = check_target_online(missing_root.to_string_lossy().as_ref(), "tr_test")
+            .expect_err("missing target root should be offline");
+        assert_eq!(err.code, "PRECHECK_DISK_OFFLINE");
+    }
+
+    #[test]
+    fn check_target_online_accepts_existing_directory() {
+        let dir = tempdir().expect("create temp dir");
+        check_target_online(dir.path().to_string_lossy().as_ref(), "tr_test")
+            .expect("existing directory should be online");
+    }
+
+    #[test]
+    fn check_target_writable_accepts_writable_root() {
+        let dir = tempdir().expect("create temp dir");
+        check_target_writable(dir.path().to_string_lossy().as_ref(), "tr_test")
+            .expect("temp dir should be writable");
+    }
+
+    #[test]
+    fn check_target_writable_rejects_missing_root() {
+        let dir = tempdir().expect("create temp dir");
+        let missing_root = dir.path().join("missing-root");
+        let err = check_target_writable(missing_root.to_string_lossy().as_ref(), "tr_test")
+            .expect_err("missing root should fail writable check");
+        assert_eq!(err.code, "PRECHECK_DISK_OFFLINE");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn postcheck_symlink_target_success() {
+        use std::os::unix::fs as unix_fs;
+
+        let dir = tempdir().expect("create temp dir");
+        let source = dir.path().join("source-link");
+        let target = dir.path().join("target-dir");
+        fs::create_dir_all(&target).expect("create target");
+        unix_fs::symlink(&target, &source).expect("create source symlink");
+
+        let result = postcheck_symlink_target(
+            source.to_string_lossy().as_ref(),
+            target.to_string_lossy().as_ref(),
+            "tr_test",
+        )
+        .expect("postcheck should pass");
+        assert_eq!(result["symlink_ok"], true);
+        assert_eq!(result["target_writable_ok"], true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn postcheck_symlink_target_rejects_non_symlink_source() {
+        let dir = tempdir().expect("create temp dir");
+        let source = dir.path().join("source-dir");
+        let target = dir.path().join("target-dir");
+        fs::create_dir_all(&source).expect("create source");
+        fs::create_dir_all(&target).expect("create target");
+
+        let err = postcheck_symlink_target(
+            source.to_string_lossy().as_ref(),
+            target.to_string_lossy().as_ref(),
+            "tr_test",
+        )
+        .expect_err("non-symlink source should fail");
+        assert_eq!(err.code, "MIGRATE_POSTCHECK_FAILED");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn postcheck_symlink_target_rejects_mismatched_target() {
+        use std::os::unix::fs as unix_fs;
+
+        let dir = tempdir().expect("create temp dir");
+        let source = dir.path().join("source-link");
+        let target = dir.path().join("target-dir");
+        let wrong_target = dir.path().join("wrong-target");
+        fs::create_dir_all(&target).expect("create target");
+        fs::create_dir_all(&wrong_target).expect("create wrong target");
+        unix_fs::symlink(&wrong_target, &source).expect("create source symlink");
+
+        let err = postcheck_symlink_target(
+            source.to_string_lossy().as_ref(),
+            target.to_string_lossy().as_ref(),
+            "tr_test",
+        )
+        .expect_err("mismatched target should fail");
+        assert_eq!(err.code, "MIGRATE_POSTCHECK_FAILED");
+    }
+
+    #[test]
+    fn operation_log_to_item_handles_invalid_details_json() {
+        let row = OperationLogRecord {
+            log_id: "log_test_invalid_json".to_string(),
+            relocation_id: "reloc_test".to_string(),
+            trace_id: "tr_test".to_string(),
+            stage: "migration".to_string(),
+            step: "copy_to_temp".to_string(),
+            status: "failed".to_string(),
+            error_code: Some("MIGRATE_COPY_FAILED".to_string()),
+            duration_ms: Some(12),
+            message: Some("copy failed".to_string()),
+            details_json: "{invalid-json".to_string(),
+            created_at: "2026-03-05T10:00:00Z".to_string(),
+        };
+
+        let item = operation_log_to_item(row);
+        let parse_error = item
+            .details
+            .get("_parse_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(parse_error, "invalid details_json payload");
+    }
+
+    #[test]
+    fn health_event_to_model_uses_default_message_without_details_message() {
+        let row = HealthEventRecord {
+            snapshot_id: "snap_test".to_string(),
+            relocation_id: "reloc_test".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            state: "healthy".to_string(),
+            check_code: "HEALTH_OK".to_string(),
+            details_json: "{}".to_string(),
+            observed_at: "2026-03-05T10:00:00Z".to_string(),
+        };
+
+        let event = health_event_to_model(row);
+        assert_eq!(event.message, "health event captured");
+    }
+
+    #[test]
+    fn health_event_to_model_extracts_message_from_details() {
+        let row = HealthEventRecord {
+            snapshot_id: "snap_test_2".to_string(),
+            relocation_id: "reloc_test".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            state: "degraded".to_string(),
+            check_code: "HEALTH_DISK_OFFLINE".to_string(),
+            details_json: r#"{ "message": "disk offline detected" }"#.to_string(),
+            observed_at: "2026-03-05T10:00:00Z".to_string(),
+        };
+
+        let event = health_event_to_model(row);
+        assert_eq!(event.message, "disk offline detected");
+    }
+
+    #[test]
+    fn match_profile_bundle_prefers_bundle_id_when_available() {
+        let profile = AppProfile {
+            app_id: "wechat-non-mas".to_string(),
+            display_name: "WeChat".to_string(),
+            tier: "experimental".to_string(),
+            bundle_ids: vec!["com.tencent.xinWeChat".to_string()],
+            process_names: vec!["WeChat".to_string()],
+            source_paths: vec![],
+            target_path_template: String::new(),
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let bundles = vec![
+            InstalledBundle {
+                path: PathBuf::from("/Applications/WrongWeChat.app"),
+                stem_lc: "wechat".to_string(),
+                bundle_id_lc: Some("com.example.wrong".to_string()),
+            },
+            InstalledBundle {
+                path: PathBuf::from("/Applications/WeChat.app"),
+                stem_lc: "wechat".to_string(),
+                bundle_id_lc: Some("com.tencent.xinwechat".to_string()),
+            },
+        ];
+
+        let matched = match_profile_bundle(&profile, &bundles).expect("should match by bundle id");
+        assert_eq!(matched, PathBuf::from("/Applications/WeChat.app"));
+    }
+
+    #[test]
+    fn match_profile_bundle_falls_back_to_hint_matching() {
+        let profile = AppProfile {
+            app_id: "telegram-desktop".to_string(),
+            display_name: "Telegram Desktop".to_string(),
+            tier: "supported".to_string(),
+            bundle_ids: vec![],
+            process_names: vec!["Telegram".to_string()],
+            source_paths: vec![],
+            target_path_template: String::new(),
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let bundles = vec![InstalledBundle {
+            path: PathBuf::from("/Applications/Telegram.app"),
+            stem_lc: "telegram".to_string(),
+            bundle_id_lc: None,
+        }];
+
+        let matched = match_profile_bundle(&profile, &bundles).expect("should match by hint");
+        assert_eq!(matched, PathBuf::from("/Applications/Telegram.app"));
+    }
+
+    #[test]
+    fn profile_match_hints_include_jetbrains_specific_tokens() {
+        let profile = AppProfile {
+            app_id: "jetbrains-caches".to_string(),
+            display_name: "JetBrains Caches".to_string(),
+            tier: "supported".to_string(),
+            bundle_ids: vec![],
+            process_names: vec!["idea".to_string()],
+            source_paths: vec![],
+            target_path_template: String::new(),
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let hints = profile_match_hints(&profile);
+        assert!(hints.contains(&"android studio".to_string()));
+        assert!(hints.contains(&"pycharm".to_string()));
+    }
+
+    #[test]
+    fn profile_match_hints_include_display_name_app_id_and_bundle_id() {
+        let profile = AppProfile {
+            app_id: "wechat-non-mas".to_string(),
+            display_name: "WeChat (Non-MAS)".to_string(),
+            tier: "experimental".to_string(),
+            bundle_ids: vec!["com.tencent.xinWeChat".to_string()],
+            process_names: vec!["WeChat".to_string()],
+            source_paths: vec![],
+            target_path_template: String::new(),
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let hints = profile_match_hints(&profile);
+        assert!(hints.contains(&"wechat (non-mas)".to_string()));
+        assert!(hints.contains(&"wechat-non-mas".to_string()));
+        assert!(hints.contains(&"com.tencent.xinwechat".to_string()));
+    }
+
+    #[test]
+    fn resolve_profile_display_name_falls_back_without_bundle() {
+        let profile = AppProfile {
+            app_id: "demo-app".to_string(),
+            display_name: "Demo App".to_string(),
+            tier: "supported".to_string(),
+            bundle_ids: vec![],
+            process_names: vec![],
+            source_paths: vec![],
+            target_path_template: String::new(),
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let name = resolve_profile_display_name(&profile, None);
+        assert_eq!(name, "Demo App");
+    }
+
+    #[test]
+    fn expand_tilde_keeps_plain_path_unchanged() {
+        let input = "/tmp/demo";
+        assert_eq!(expand_tilde(input), input);
+    }
+
+    #[test]
+    fn icon_mime_from_ext_maps_known_extensions_and_fallback() {
+        assert_eq!(icon_mime_from_ext(Path::new("icon.jpg")), "image/jpeg");
+        assert_eq!(icon_mime_from_ext(Path::new("icon.webp")), "image/webp");
+        assert_eq!(icon_mime_from_ext(Path::new("icon.gif")), "image/gif");
+        assert_eq!(icon_mime_from_ext(Path::new("icon.unknown")), "image/png");
+    }
+
+    #[test]
+    fn read_icon_data_url_builds_data_url_for_png_file() {
+        let dir = tempdir().expect("create temp dir");
+        let icon_path = dir.path().join("icon.png");
+        fs::write(&icon_path, b"PNG").expect("write icon file");
+
+        let data_url =
+            read_icon_data_url(icon_path.to_string_lossy().as_ref()).expect("read icon data url");
+        assert!(data_url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn read_icon_data_url_returns_none_for_empty_file() {
+        let dir = tempdir().expect("create temp dir");
+        let icon_path = dir.path().join("empty.png");
+        fs::write(&icon_path, b"").expect("write empty icon");
+
+        let data_url = read_icon_data_url(icon_path.to_string_lossy().as_ref());
+        assert!(data_url.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_size_ignores_symlink_entries() {
+        use std::os::unix::fs as unix_fs;
+
+        let dir = tempdir().expect("create temp dir");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target dir");
+        fs::write(target.join("payload.txt"), b"hello").expect("write payload");
+
+        let link = dir.path().join("source-link");
+        unix_fs::symlink(&target, &link).expect("create symlink");
+
+        let size = directory_size(&link).expect("calculate size");
+        assert_eq!(size, 0);
+    }
 }

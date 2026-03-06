@@ -44,9 +44,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_apps,
             commands::get_disk_status,
+            commands::get_system_disk_status,
             commands::migrate_app,
             commands::rollback_relocation,
-            commands::export_operation_logs,
+            commands::list_operation_logs,
             commands::list_relocations,
             commands::list_health_events,
             commands::reconcile_relocations,

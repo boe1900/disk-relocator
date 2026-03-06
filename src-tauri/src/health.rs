@@ -413,4 +413,216 @@ mod tests {
         assert_eq!(statuses[0].state, "degraded");
         assert_eq!(statuses[0].checks[0].code, "HEALTH_DISK_OFFLINE");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn health_check_marks_symlink_target_mismatch_as_degraded() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target_root = dir.path().join("target-root");
+        let expected_target = target_root.join("AppData").join("Telegram Desktop");
+        let actual_target = target_root.join("AppData").join("Wrong Target");
+        fs::create_dir_all(&expected_target).expect("create expected target");
+        fs::create_dir_all(&actual_target).expect("create actual target");
+        std::os::unix::fs::symlink(&actual_target, &source).expect("create source symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_health_003".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: target_root.to_string_lossy().to_string(),
+            target_path: expected_target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_health".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let statuses = run_health_check(&db, "tr_health_test_003", true).expect("run health");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].state, "degraded");
+        assert_eq!(statuses[0].checks[0].code, "HEALTH_METADATA_DRIFT");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn health_check_marks_missing_target_as_broken() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target_root = dir.path().join("target-root");
+        let target = target_root.join("AppData").join("Telegram Desktop");
+        fs::create_dir_all(&target_root).expect("create target root");
+        std::os::unix::fs::symlink(&target, &source).expect("create source symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_health_004".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: target_root.to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_health".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let statuses = run_health_check(&db, "tr_health_test_004", false).expect("run health");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].state, "broken");
+        assert_eq!(statuses[0].checks[0].code, "HEALTH_TARGET_MISSING");
+    }
+
+    #[test]
+    fn health_check_marks_non_symlink_source_as_broken() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source-folder");
+        let target_root = dir.path().join("target-root");
+        let target = target_root.join("AppData").join("Telegram Desktop");
+        fs::create_dir_all(&source).expect("create source folder");
+        fs::create_dir_all(&target).expect("create target folder");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_health_005".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: target_root.to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_health".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let statuses = run_health_check(&db, "tr_health_test_005", true).expect("run health");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].state, "broken");
+        assert_eq!(statuses[0].checks[0].code, "HEALTH_SYMLINK_MISSING");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn health_check_can_skip_operation_log_writes() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target_root = dir.path().join("target-root");
+        let target = target_root.join("AppData").join("Telegram Desktop");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &source).expect("create source symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_health_006".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: target_root.to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_health".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let statuses = run_health_check(&db, "tr_health_test_006", false).expect("run health");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].state, "healthy");
+
+        let logs = db
+            .list_operation_logs(Some("reloc_health_006"), None)
+            .expect("list operation logs");
+        assert!(logs.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn health_check_writes_operation_log_when_enabled() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target_root = dir.path().join("target-root");
+        let target = target_root.join("AppData").join("Telegram Desktop");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &source).expect("create source symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_health_007".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: target_root.to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_health".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let statuses = run_health_check(&db, "tr_health_test_007", true).expect("run health");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].checks[0].code, "HEALTH_RW_PROBE_OK");
+
+        let logs = db
+            .list_operation_logs(Some("reloc_health_007"), None)
+            .expect("list operation logs");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].stage, "health");
+        assert_eq!(logs[0].step, "evaluate_relocation");
+        assert_eq!(logs[0].status, "succeeded");
+    }
 }

@@ -209,57 +209,56 @@ fn evaluate_record(record: &RelocationRecord) -> Vec<InternalIssue> {
                 ));
             }
         }
-    } else {
-        if is_active_state(&record.state) {
-            let backup_exists = backup_path
-                .as_ref()
-                .map(|path| path.exists())
-                .unwrap_or(false);
-            if !target_path.exists() && !temp_path.exists() && !backup_exists {
-                issues.push(new_issue(
-                    record,
-                    "RECON_STATE_STALE_ROLLED_BACK",
-                    "warning",
-                    "metadata indicates active relocation but filesystem looks rolled back.",
-                    "run safe-fix to resync metadata to ROLLED_BACK.",
-                    Some(SafeFixAction::MarkRolledBack),
-                    json!({
-                        "state": record.state,
-                        "source_path": record.source_path,
-                        "target_path": record.target_path
-                    }),
-                ));
-            } else {
-                issues.push(new_issue(
-                    record,
-                    "RECON_EXPECTED_SYMLINK_MISSING",
-                    "critical",
-                    "active relocation state expects source symlink, but source is not symlink.",
-                    "run rollback to recover source path and clear inconsistent state.",
-                    None,
-                    json!({
-                        "state": record.state,
-                        "source_path": record.source_path,
-                        "target_path": record.target_path
-                    }),
-                ));
-            }
-        } else if record.state == "ROLLED_BACK" && target_path.exists() {
+    } else if is_active_state(&record.state) {
+        let backup_exists = backup_path
+            .as_ref()
+            .map(|path| path.exists())
+            .unwrap_or(false);
+        if !target_path.exists() && !temp_path.exists() && !backup_exists {
             issues.push(new_issue(
                 record,
-                "RECON_TARGET_RESIDUE_AFTER_ROLLBACK",
+                "RECON_STATE_STALE_ROLLED_BACK",
                 "warning",
-                "target path residue detected after rolled-back state.",
-                "confirm target data is unnecessary, then clean up manually.",
+                "metadata indicates active relocation but filesystem looks rolled back.",
+                "run safe-fix to resync metadata to ROLLED_BACK.",
+                Some(SafeFixAction::MarkRolledBack),
+                json!({
+                    "state": record.state,
+                    "source_path": record.source_path,
+                    "target_path": record.target_path
+                }),
+            ));
+        } else {
+            issues.push(new_issue(
+                record,
+                "RECON_EXPECTED_SYMLINK_MISSING",
+                "critical",
+                "active relocation state expects source symlink, but source is not symlink.",
+                "run rollback to recover source path and clear inconsistent state.",
                 None,
-                json!({ "target_path": record.target_path }),
+                json!({
+                    "state": record.state,
+                    "source_path": record.source_path,
+                    "target_path": record.target_path
+                }),
             ));
         }
+    } else if record.state == "ROLLED_BACK" && target_path.exists() {
+        issues.push(new_issue(
+            record,
+            "RECON_TARGET_RESIDUE_AFTER_ROLLBACK",
+            "warning",
+            "target path residue detected after rolled-back state.",
+            "confirm target data is unnecessary, then clean up manually.",
+            None,
+            json!({ "target_path": record.target_path }),
+        ));
     }
 
     issues
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_reconcile_log(
     db: &Database,
     relocation_id: &str,
@@ -453,7 +452,7 @@ pub fn spawn_reconcile_monitor(db: Database) {
         .name("disk-relocator-reconcile-monitor".to_string())
         .spawn(move || loop {
             let trace_id = new_monitor_trace_id();
-            if let Err(err) = run_reconcile(&db, &trace_id, false, 500, false) {
+            if let Err(err) = run_reconcile(&db, &trace_id, true, 500, false) {
                 eprintln!("[reconcile-monitor] run failed: {err}");
             }
             thread::sleep(Duration::from_secs(RECONCILE_POLL_INTERVAL_SECS));
@@ -513,6 +512,51 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_safe_fix_cleans_temp_residue() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &source).expect("create symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_003".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let temp = dir.path().join("target.tmp.reloc_reconcile_003");
+        fs::create_dir_all(&temp).expect("create temp residue");
+        assert!(temp.exists());
+
+        let result = run_reconcile(&db, "tr_reconcile_test_3", true, 50, true).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.fixed_count, 1);
+        assert_eq!(result.issues[0].code, "RECON_TEMP_PATH_RESIDUE");
+        assert!(result.issues[0].safe_fix_applied);
+        assert!(!temp.exists());
+    }
+
     #[test]
     fn reconcile_safe_fix_marks_stale_state_as_rolled_back() {
         let dir = tempdir().expect("tempdir");
@@ -559,5 +603,288 @@ mod tests {
             .expect("row exists");
         assert_eq!(row.state, "ROLLED_BACK");
         assert_eq!(row.health_state, "healthy");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_safe_fix_marks_stale_active_state_as_healthy() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &source).expect("create symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_004".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "PRECHECKING".to_string(),
+            health_state: "degraded".to_string(),
+            last_error_code: Some("PREVIOUS_ERROR".to_string()),
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        let result = run_reconcile(&db, "tr_reconcile_test_4", true, 50, true).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.fixed_count, 1);
+        assert_eq!(result.issues[0].code, "RECON_STATE_STALE_ACTIVE");
+        assert!(result.issues[0].safe_fix_applied);
+
+        let row = db
+            .get_relocation("reloc_reconcile_004")
+            .expect("query relocation")
+            .expect("row exists");
+        assert_eq!(row.state, "HEALTHY");
+        assert_eq!(row.health_state, "healthy");
+    }
+
+    #[test]
+    fn reconcile_detects_expected_symlink_missing_without_safe_fix() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&source).expect("create source dir");
+        fs::create_dir_all(&target).expect("create target dir");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_005".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let result = run_reconcile(&db, "tr_reconcile_test_5", true, 50, false).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.fixed_count, 0);
+        assert_eq!(result.issues[0].code, "RECON_EXPECTED_SYMLINK_MISSING");
+        assert!(!result.issues[0].safe_fix_applied);
+        assert!(result.issues[0].safe_fix_action.is_none());
+    }
+
+    #[test]
+    fn reconcile_marks_missing_source_as_critical_issue() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("missing-source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target dir");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_006".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let result = run_reconcile(&db, "tr_reconcile_test_6", true, 50, false).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.fixed_count, 0);
+        assert_eq!(result.issues[0].code, "RECON_SOURCE_MISSING");
+        assert_eq!(result.issues[0].severity, "critical");
+        assert!(!result.issues[0].safe_fix_applied);
+        assert!(result.issues[0].safe_fix_action.is_none());
+    }
+
+    #[test]
+    fn reconcile_respects_scan_limit() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        for index in 0..2 {
+            let source = dir.path().join(format!("missing-source-{index}"));
+            let target = dir.path().join(format!("target-{index}"));
+            fs::create_dir_all(&target).expect("create target dir");
+
+            let now = "2026-03-05T10:00:00Z".to_string();
+            db.insert_relocation(&NewRelocationRecord {
+                relocation_id: format!("reloc_reconcile_limit_{index}"),
+                app_id: "telegram-desktop".to_string(),
+                tier: "supported".to_string(),
+                mode: "migrate".to_string(),
+                source_path: source.to_string_lossy().to_string(),
+                target_root: dir.path().to_string_lossy().to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+                state: "HEALTHY".to_string(),
+                health_state: "healthy".to_string(),
+                last_error_code: None,
+                trace_id: "tr_seed".to_string(),
+                source_size_bytes: 0,
+                target_size_bytes: 0,
+                created_at: now.clone(),
+                updated_at: format!("2026-03-05T10:00:0{index}Z"),
+                completed_at: Some(now),
+            })
+            .expect("insert relocation");
+        }
+
+        let result = run_reconcile(&db, "tr_reconcile_limit", false, 1, false).expect("reconcile");
+        assert_eq!(result.scanned, 1);
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.issues[0].code, "RECON_SOURCE_MISSING");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_writes_detect_and_safe_fix_logs_when_enabled() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &source).expect("create symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_log_001".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let temp = dir.path().join("target.tmp.reloc_reconcile_log_001");
+        fs::create_dir_all(&temp).expect("create temp residue");
+
+        let result = run_reconcile(&db, "tr_reconcile_log", true, 50, true).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.fixed_count, 1);
+
+        let logs = db
+            .list_operation_logs(Some("reloc_reconcile_log_001"), Some("tr_reconcile_log"))
+            .expect("list reconcile logs");
+        assert!(logs
+            .iter()
+            .any(|log| log.step == "reconcile_detect" && log.status == "failed"));
+        assert!(logs
+            .iter()
+            .any(|log| { log.step == "reconcile_safe_fix" && log.status == "succeeded" }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_reports_safe_fixable_count_for_mixed_issues() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source_a = dir.path().join("source-a");
+        let target_a = dir.path().join("target-a");
+        fs::create_dir_all(&target_a).expect("create target a");
+        std::os::unix::fs::symlink(&target_a, &source_a).expect("create symlink a");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_mixed_a".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source_a.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target_a.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source_a.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: "2026-03-05T10:00:01Z".to_string(),
+            completed_at: Some(now.clone()),
+        })
+        .expect("insert relocation a");
+        let temp = dir.path().join("target-a.tmp.reloc_reconcile_mixed_a");
+        fs::create_dir_all(&temp).expect("create temp residue");
+
+        let source_b = dir.path().join("missing-source-b");
+        let target_b = dir.path().join("target-b");
+        fs::create_dir_all(&target_b).expect("create target b");
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_mixed_b".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source_b.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target_b.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source_b.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: "2026-03-05T10:00:02Z".to_string(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation b");
+
+        let result = run_reconcile(&db, "tr_reconcile_mixed", false, 50, false).expect("reconcile");
+        assert_eq!(result.scanned, 2);
+        assert_eq!(result.drift_count, 2);
+        assert_eq!(result.safe_fixable_count, 1);
+        assert_eq!(result.fixed_count, 0);
     }
 }

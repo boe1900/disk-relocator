@@ -6,19 +6,30 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test:frontend": "vitest run",
+    "check:frontend": "npm run build && npm run test:frontend",
+    "check:rust": "bash -lc 'cd src-tauri && cargo fmt -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all'",
+    "check:release": "bash tests/release/run-release-gate.sh",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",
+    "lucide-vue-next": "^0.577.0",
     "vue": "^3.5.13"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.6",
+    "autoprefixer": "^10.4.27",
+    "jsdom": "^26.1.0",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.17",
     "typescript": "^5.8.2",
     "vite": "^6.3.0",
+    "vitest": "^2.1.8",
     "vue-tsc": "^2.2.8"
   }
 }

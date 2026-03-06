@@ -166,6 +166,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_relocation_state(
         &self,
         relocation_id: &str,
@@ -704,5 +705,482 @@ mod tests {
             Some("HEALTH_TARGET_READONLY")
         );
         assert_eq!(monitored.trace_id, "tr_test_health");
+    }
+
+    #[test]
+    fn operation_logs_support_combined_filter_and_time_order() {
+        let dir = tempdir().expect("create temp dir");
+        let db = Database::init(dir.path().to_path_buf()).expect("init database");
+        let created_at = "2026-03-05T10:00:00Z".to_string();
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_log_001".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/Library/Containers/com.tencent.xinWeChat".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/WeChat".to_string(),
+            backup_path: Some(
+                "/Users/test/Library/Containers/com.tencent.xinWeChat.bak".to_string(),
+            ),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_log_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: created_at.clone(),
+            updated_at: created_at,
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        db.insert_operation_log(&NewOperationLogEntry {
+            log_id: "log_log_001".to_string(),
+            relocation_id: "reloc_log_001".to_string(),
+            trace_id: "tr_log_1".to_string(),
+            stage: "migration".to_string(),
+            step: "copy_to_temp".to_string(),
+            status: "started".to_string(),
+            error_code: None,
+            duration_ms: Some(1),
+            message: Some("copy started".to_string()),
+            details_json: "{}".to_string(),
+            created_at: "2026-03-05T10:00:01Z".to_string(),
+        })
+        .expect("insert log 1");
+
+        db.insert_operation_log(&NewOperationLogEntry {
+            log_id: "log_log_002".to_string(),
+            relocation_id: "reloc_log_001".to_string(),
+            trace_id: "tr_log_1".to_string(),
+            stage: "migration".to_string(),
+            step: "copy_to_temp".to_string(),
+            status: "failed".to_string(),
+            error_code: Some("MIGRATE_COPY_FAILED".to_string()),
+            duration_ms: Some(22),
+            message: Some("copy failed".to_string()),
+            details_json: "{}".to_string(),
+            created_at: "2026-03-05T10:00:03Z".to_string(),
+        })
+        .expect("insert log 2");
+
+        db.insert_operation_log(&NewOperationLogEntry {
+            log_id: "log_log_003".to_string(),
+            relocation_id: "reloc_log_001".to_string(),
+            trace_id: "tr_log_2".to_string(),
+            stage: "rollback".to_string(),
+            step: "state_restore".to_string(),
+            status: "succeeded".to_string(),
+            error_code: None,
+            duration_ms: Some(8),
+            message: Some("rollback done".to_string()),
+            details_json: "{}".to_string(),
+            created_at: "2026-03-05T10:01:00Z".to_string(),
+        })
+        .expect("insert log 3");
+
+        let all = db
+            .list_operation_logs(Some("reloc_log_001"), None)
+            .expect("query all logs by relocation");
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].log_id, "log_log_001");
+        assert_eq!(all[1].log_id, "log_log_002");
+        assert_eq!(all[2].log_id, "log_log_003");
+
+        let filtered = db
+            .list_operation_logs(Some("reloc_log_001"), Some("tr_log_1"))
+            .expect("query logs by relocation + trace");
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].log_id, "log_log_001");
+        assert_eq!(filtered[1].log_id, "log_log_002");
+    }
+
+    #[test]
+    fn health_monitoring_list_filters_active_states_and_orders_desc() {
+        let dir = tempdir().expect("create temp dir");
+        let db = Database::init(dir.path().to_path_buf()).expect("init database");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_active_old".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-old".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/WeChatOld".to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_1".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:00:00Z".to_string(),
+            updated_at: "2026-03-05T10:01:00Z".to_string(),
+            completed_at: None,
+        })
+        .expect("insert active old");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_inactive".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-inactive".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/Telegram".to_string(),
+            backup_path: None,
+            state: "ROLLED_BACK".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_2".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:02:00Z".to_string(),
+            updated_at: "2026-03-05T10:03:00Z".to_string(),
+            completed_at: None,
+        })
+        .expect("insert inactive");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_active_new".to_string(),
+            app_id: "xcode-derived-data".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-new".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/Xcode".to_string(),
+            backup_path: None,
+            state: "DEGRADED".to_string(),
+            health_state: "degraded".to_string(),
+            last_error_code: Some("HEALTH_TARGET_READONLY".to_string()),
+            trace_id: "tr_seed_3".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:04:00Z".to_string(),
+            updated_at: "2026-03-05T10:05:00Z".to_string(),
+            completed_at: None,
+        })
+        .expect("insert active new");
+
+        let rows = db
+            .list_health_monitoring_relocations()
+            .expect("list monitoring rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].relocation_id, "reloc_active_new");
+        assert_eq!(rows[1].relocation_id, "reloc_active_old");
+    }
+
+    #[test]
+    fn latest_health_snapshots_returns_latest_per_relocation() {
+        let dir = tempdir().expect("create temp dir");
+        let db = Database::init(dir.path().to_path_buf()).expect("init database");
+
+        let created_at = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_snap_001".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-1".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/WeChat".to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_snap_1".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: created_at.clone(),
+            updated_at: created_at.clone(),
+            completed_at: None,
+        })
+        .expect("insert relocation 1");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_snap_002".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-2".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/Telegram".to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_snap_2".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: created_at.clone(),
+            updated_at: created_at,
+            completed_at: None,
+        })
+        .expect("insert relocation 2");
+
+        db.insert_health_snapshot(&NewHealthSnapshot {
+            snapshot_id: "snap_001_old".to_string(),
+            relocation_id: "reloc_snap_001".to_string(),
+            state: "degraded".to_string(),
+            check_code: "HEALTH_DISK_OFFLINE".to_string(),
+            details_json: "{}".to_string(),
+            observed_at: "2026-03-05T10:01:00Z".to_string(),
+        })
+        .expect("insert old snapshot");
+        db.insert_health_snapshot(&NewHealthSnapshot {
+            snapshot_id: "snap_001_new".to_string(),
+            relocation_id: "reloc_snap_001".to_string(),
+            state: "healthy".to_string(),
+            check_code: "HEALTH_RW_PROBE_OK".to_string(),
+            details_json: "{}".to_string(),
+            observed_at: "2026-03-05T10:02:00Z".to_string(),
+        })
+        .expect("insert new snapshot");
+        db.insert_health_snapshot(&NewHealthSnapshot {
+            snapshot_id: "snap_002_only".to_string(),
+            relocation_id: "reloc_snap_002".to_string(),
+            state: "healthy".to_string(),
+            check_code: "HEALTH_RW_PROBE_OK".to_string(),
+            details_json: "{}".to_string(),
+            observed_at: "2026-03-05T10:01:30Z".to_string(),
+        })
+        .expect("insert second snapshot");
+
+        let latest = db
+            .list_latest_health_snapshots()
+            .expect("list latest snapshots");
+        assert_eq!(latest.len(), 2);
+
+        let first = latest
+            .iter()
+            .find(|row| row.relocation_id == "reloc_snap_001")
+            .expect("first relocation latest row");
+        assert_eq!(first.check_code, "HEALTH_RW_PROBE_OK");
+        assert_eq!(first.observed_at, "2026-03-05T10:02:00Z");
+
+        let second = latest
+            .iter()
+            .find(|row| row.relocation_id == "reloc_snap_002")
+            .expect("second relocation latest row");
+        assert_eq!(second.check_code, "HEALTH_RW_PROBE_OK");
+        assert_eq!(second.observed_at, "2026-03-05T10:01:30Z");
+    }
+
+    #[test]
+    fn unfinished_relocations_are_filtered_and_ordered_by_updated_time() {
+        let dir = tempdir().expect("create temp dir");
+        let db = Database::init(dir.path().to_path_buf()).expect("init database");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_unfinished_old".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-old".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/WeChatOld".to_string(),
+            backup_path: None,
+            state: "PRECHECKING".to_string(),
+            health_state: "unknown".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_old".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:00:00Z".to_string(),
+            updated_at: "2026-03-05T10:01:00Z".to_string(),
+            completed_at: None,
+        })
+        .expect("insert unfinished old");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_finished".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-finished".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/Telegram".to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_finished".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:02:00Z".to_string(),
+            updated_at: "2026-03-05T10:03:00Z".to_string(),
+            completed_at: None,
+        })
+        .expect("insert finished row");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_unfinished_new".to_string(),
+            app_id: "xcode-derived-data".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-new".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/Xcode".to_string(),
+            backup_path: None,
+            state: "SWITCHING".to_string(),
+            health_state: "unknown".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_new".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:04:00Z".to_string(),
+            updated_at: "2026-03-05T10:05:00Z".to_string(),
+            completed_at: None,
+        })
+        .expect("insert unfinished new");
+
+        let rows = db
+            .list_unfinished_relocations()
+            .expect("list unfinished rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].relocation_id, "reloc_unfinished_old");
+        assert_eq!(rows[1].relocation_id, "reloc_unfinished_new");
+    }
+
+    #[test]
+    fn health_events_respect_limit_and_latest_first_order() {
+        let dir = tempdir().expect("create temp dir");
+        let db = Database::init(dir.path().to_path_buf()).expect("init database");
+
+        let created_at = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_health_limit".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/WeChat".to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_health_limit".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: created_at.clone(),
+            updated_at: created_at,
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        db.insert_health_snapshot(&NewHealthSnapshot {
+            snapshot_id: "snap_limit_1".to_string(),
+            relocation_id: "reloc_health_limit".to_string(),
+            state: "healthy".to_string(),
+            check_code: "HEALTH_1".to_string(),
+            details_json: "{}".to_string(),
+            observed_at: "2026-03-05T10:00:01Z".to_string(),
+        })
+        .expect("insert snapshot 1");
+        db.insert_health_snapshot(&NewHealthSnapshot {
+            snapshot_id: "snap_limit_2".to_string(),
+            relocation_id: "reloc_health_limit".to_string(),
+            state: "degraded".to_string(),
+            check_code: "HEALTH_2".to_string(),
+            details_json: "{}".to_string(),
+            observed_at: "2026-03-05T10:00:02Z".to_string(),
+        })
+        .expect("insert snapshot 2");
+        db.insert_health_snapshot(&NewHealthSnapshot {
+            snapshot_id: "snap_limit_3".to_string(),
+            relocation_id: "reloc_health_limit".to_string(),
+            state: "broken".to_string(),
+            check_code: "HEALTH_3".to_string(),
+            details_json: "{}".to_string(),
+            observed_at: "2026-03-05T10:00:03Z".to_string(),
+        })
+        .expect("insert snapshot 3");
+
+        let events = db.list_health_events(2).expect("list health events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].snapshot_id, "snap_limit_3");
+        assert_eq!(events[1].snapshot_id, "snap_limit_2");
+    }
+
+    #[test]
+    fn operation_logs_trace_only_filter_returns_time_sorted_rows() {
+        let dir = tempdir().expect("create temp dir");
+        let db = Database::init(dir.path().to_path_buf()).expect("init database");
+
+        let created_at = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_trace_only".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/WeChat".to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: created_at.clone(),
+            updated_at: created_at,
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        db.insert_operation_log(&NewOperationLogEntry {
+            log_id: "log_trace_1".to_string(),
+            relocation_id: "reloc_trace_only".to_string(),
+            trace_id: "tr_keep".to_string(),
+            stage: "migration".to_string(),
+            step: "copy_to_temp".to_string(),
+            status: "started".to_string(),
+            error_code: None,
+            duration_ms: Some(1),
+            message: Some("copy started".to_string()),
+            details_json: "{}".to_string(),
+            created_at: "2026-03-05T10:00:01Z".to_string(),
+        })
+        .expect("insert trace log 1");
+        db.insert_operation_log(&NewOperationLogEntry {
+            log_id: "log_trace_2".to_string(),
+            relocation_id: "reloc_trace_only".to_string(),
+            trace_id: "tr_drop".to_string(),
+            stage: "migration".to_string(),
+            step: "copy_to_temp".to_string(),
+            status: "failed".to_string(),
+            error_code: Some("MIGRATE_COPY_FAILED".to_string()),
+            duration_ms: Some(2),
+            message: Some("copy failed".to_string()),
+            details_json: "{}".to_string(),
+            created_at: "2026-03-05T10:00:02Z".to_string(),
+        })
+        .expect("insert trace log 2");
+        db.insert_operation_log(&NewOperationLogEntry {
+            log_id: "log_trace_3".to_string(),
+            relocation_id: "reloc_trace_only".to_string(),
+            trace_id: "tr_keep".to_string(),
+            stage: "rollback".to_string(),
+            step: "state_restore".to_string(),
+            status: "succeeded".to_string(),
+            error_code: None,
+            duration_ms: Some(3),
+            message: Some("rollback done".to_string()),
+            details_json: "{}".to_string(),
+            created_at: "2026-03-05T10:00:03Z".to_string(),
+        })
+        .expect("insert trace log 3");
+
+        let rows = db
+            .list_operation_logs(None, Some("tr_keep"))
+            .expect("list trace-only logs");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].log_id, "log_trace_1");
+        assert_eq!(rows[1].log_id, "log_trace_3");
     }
 }

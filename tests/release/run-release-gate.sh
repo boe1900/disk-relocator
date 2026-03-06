@@ -25,6 +25,9 @@ echo "[release-gate] start"
 run_step "build frontend" npm run build
 
 run_step "rust compile checks" bash -lc "cd src-tauri && cargo check"
+run_step "rust format checks" bash -lc "cd src-tauri && cargo fmt -- --check"
+run_step "rust lint checks (clippy -D warnings)" \
+  bash -lc "cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings"
 
 run_step "gate A: 20 rounds migrate+rollback" \
   bash -lc "cd src-tauri && cargo test migration::tests::migration_and_rollback_20_rounds"

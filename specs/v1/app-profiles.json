@@ -82,6 +82,7 @@
       "tier": "supported",
       "distribution": ["all"],
       "tested_versions": ["macOS 13+", "Xcode 15+"],
+      "bundle_ids": ["com.apple.dt.Xcode"],
       "process_names": ["Xcode"],
       "source_paths": [
         "~/Library/Developer/Xcode/DerivedData"
@@ -119,6 +120,7 @@
       "tier": "experimental",
       "distribution": ["direct-download"],
       "tested_versions": ["macOS 13+", "WeChat 4.x"],
+      "bundle_ids": ["com.tencent.xinWeChat"],
       "process_names": ["WeChat"],
       "source_paths": [
         "~/Library/Containers/com.tencent.xinWeChat"
@@ -150,82 +152,6 @@
         "cleanup_incomplete_target": true
       },
       "notes": "容器路径受分发来源和系统版本影响，必须二次确认。"
-    },
-    {
-      "app_id": "wechat-file-provider-extension",
-      "display_name": "WeChat File Provider Extension",
-      "tier": "experimental",
-      "distribution": ["direct-download"],
-      "tested_versions": ["macOS 13+", "WeChat 4.x"],
-      "process_names": ["WeChat"],
-      "source_paths": [
-        "~/Library/Containers/com.tencent.xinWeChat.WeChatFileProviderExtension"
-      ],
-      "target_path_template": "{target_root}/AppData/WeChat/WeChatFileProviderExtension",
-      "precheck_rules": {
-        "require_process_stopped": true,
-        "require_full_disk_access": true,
-        "allow_bootstrap_if_source_missing": false,
-        "require_experimental_confirmation": true
-      },
-      "health_checks": [
-        {
-          "type": "is_symlink",
-          "path": "~/Library/Containers/com.tencent.xinWeChat.WeChatFileProviderExtension"
-        },
-        {
-          "type": "target_exists",
-          "path": "{target_root}/AppData/WeChat/WeChatFileProviderExtension"
-        },
-        {
-          "type": "rw_probe",
-          "path": "{target_root}/AppData/WeChat/WeChatFileProviderExtension"
-        }
-      ],
-      "rollback_rules": {
-        "remove_symlink_first": true,
-        "restore_backup_dir": true,
-        "cleanup_incomplete_target": true
-      },
-      "notes": "微信文件扩展容器，建议与主容器联动迁移。"
-    },
-    {
-      "app_id": "wechat-mac-share-extension",
-      "display_name": "WeChat Mac Share Extension",
-      "tier": "experimental",
-      "distribution": ["direct-download"],
-      "tested_versions": ["macOS 13+", "WeChat 4.x"],
-      "process_names": ["WeChat"],
-      "source_paths": [
-        "~/Library/Containers/com.tencent.xinWeChat.WeChatMacShare"
-      ],
-      "target_path_template": "{target_root}/AppData/WeChat/WeChatMacShare",
-      "precheck_rules": {
-        "require_process_stopped": true,
-        "require_full_disk_access": true,
-        "allow_bootstrap_if_source_missing": false,
-        "require_experimental_confirmation": true
-      },
-      "health_checks": [
-        {
-          "type": "is_symlink",
-          "path": "~/Library/Containers/com.tencent.xinWeChat.WeChatMacShare"
-        },
-        {
-          "type": "target_exists",
-          "path": "{target_root}/AppData/WeChat/WeChatMacShare"
-        },
-        {
-          "type": "rw_probe",
-          "path": "{target_root}/AppData/WeChat/WeChatMacShare"
-        }
-      ],
-      "rollback_rules": {
-        "remove_symlink_first": true,
-        "restore_backup_dir": true,
-        "cleanup_incomplete_target": true
-      },
-      "notes": "微信分享扩展容器，建议与主容器联动迁移。"
     },
     {
       "app_id": "mas-sandbox-containers",

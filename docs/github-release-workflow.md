@@ -1,0 +1,51 @@
+# GitHub Release 发布流程
+
+本文描述仓库内 `Release` GitHub Actions 工作流的使用方式。  
+当前目标是自动发布 **macOS Apple Silicon (`aarch64`)** 安装包。
+
+## 触发方式
+
+1. 自动触发：推送符合 `v*` 的 tag（例如 `v0.1.0`）。
+2. 手动触发：在 GitHub Actions 页面运行 `Release` workflow，并填写：
+   - `tag_name`（必填，例：`v0.1.0`）
+   - `release_draft`（是否草稿）
+   - `prerelease`（是否预发布）
+
+## 发布前校验（工作流内自动执行）
+
+1. 版本一致性校验：
+   - `package.json` 的 `version`
+   - `src-tauri/tauri.conf.json` 的 `version`
+   - `src-tauri/Cargo.toml` 的 `version`
+   - 以及 tag 必须等于 `v<version>`
+2. 发布门禁：`npm run check:release`
+3. 打包目标：`--target aarch64-apple-darwin`
+
+如果上述任一步骤失败，Release 不会发布。
+
+## Release 产物
+
+工作流会通过 `tauri-apps/tauri-action` 自动上传构建产物到 GitHub Release。  
+同时会把 `src-tauri/target/aarch64-apple-darwin/release/bundle/**` 作为 workflow artifact 保存，便于排障和留档。
+
+## 推荐操作顺序
+
+1. 本地更新版本号（三处保持一致）：
+   - `package.json`
+   - `src-tauri/tauri.conf.json`
+   - `src-tauri/Cargo.toml`
+2. 本地先跑一次：
+   - `npm run check:frontend`
+   - `npm run check:rust`
+   - `npm run check:release`
+3. 提交并推送主分支。
+4. 创建并推送 tag：
+   - `git tag v0.1.0`
+   - `git push origin v0.1.0`
+5. 到 GitHub Actions 查看 `Release` workflow 执行状态，确认 Release 页面资产已生成。
+
+## 常见失败原因
+
+1. 版本号不同步：tag 与三处 version 不一致。
+2. 目标架构错误：非 Apple Silicon 目标不会在本流程中产出。
+3. 门禁失败：`check:release` 任何一步失败都会阻断发布。

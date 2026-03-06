@@ -203,17 +203,15 @@ pub fn rollback_bootstrap_switch(
         }
     }
 
-    if outcome.source_placeholder_removed {
-        if fs::symlink_metadata(source_path).is_err() {
-            fs::create_dir_all(source_path).map_err(|err| {
-                error(
-                    "ROLLBACK_RESTORE_BACKUP_FAILED",
-                    "failed to recreate source placeholder during rollback.",
-                    false,
-                    json!({ "source_path": source_path, "error": err.to_string() }),
-                )
-            })?;
-        }
+    if outcome.source_placeholder_removed && fs::symlink_metadata(source_path).is_err() {
+        fs::create_dir_all(source_path).map_err(|err| {
+            error(
+                "ROLLBACK_RESTORE_BACKUP_FAILED",
+                "failed to recreate source placeholder during rollback.",
+                false,
+                json!({ "source_path": source_path, "error": err.to_string() }),
+            )
+        })?;
     }
 
     if outcome.target_dir_created {
@@ -308,5 +306,47 @@ mod tests {
 
         assert!(source_path.is_dir());
         assert!(!target_path.exists());
+    }
+
+    #[test]
+    fn bootstrap_fails_when_target_contains_existing_data() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        let target_path = dir.path().join("target");
+        fs::create_dir_all(&source_path).expect("create source placeholder");
+        fs::create_dir_all(&target_path).expect("create target");
+        fs::write(target_path.join("payload.txt"), b"hello").expect("write target payload");
+
+        let err = execute_bootstrap_switch(&source_path, &target_path).expect_err("expect failure");
+        assert_eq!(err.code, "PRECHECK_BOOTSTRAP_NOT_ALLOWED");
+    }
+
+    #[test]
+    fn bootstrap_fails_when_target_exists_as_file() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        let target_path = dir.path().join("target.file");
+        fs::create_dir_all(&source_path).expect("create source placeholder");
+        fs::write(&target_path, b"not a directory").expect("create target file");
+
+        let err = execute_bootstrap_switch(&source_path, &target_path).expect_err("expect failure");
+        assert_eq!(err.code, "MIGRATE_SWITCH_SYMLINK_FAILED");
+    }
+
+    #[test]
+    fn rollback_does_not_remove_non_empty_target_dir() {
+        let dir = tempdir().expect("create tempdir");
+        let source_path = dir.path().join("source");
+        let target_path = dir.path().join("target");
+        fs::create_dir_all(&source_path).expect("create source placeholder");
+
+        let outcome =
+            execute_bootstrap_switch(&source_path, &target_path).expect("bootstrap switch");
+        fs::write(target_path.join("payload.txt"), b"kept").expect("write target payload");
+
+        rollback_bootstrap_switch(&source_path, &target_path, &outcome).expect("rollback");
+        assert!(source_path.is_dir());
+        assert!(target_path.is_dir());
+        assert!(target_path.join("payload.txt").exists());
     }
 }

@@ -1,0 +1,29 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 渐变保留，但只用于中间主体方块 -->
+    <linearGradient id="aurora" x1="205" y1="205" x2="819" y2="819" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#06B6D4"/>
+      <stop offset="0.5" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+
+    <!-- 阴影减弱，避免 Dock 中视觉膨胀 -->
+    <filter id="shadow1" x="-16%" y="-16%" width="132%" height="132%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <!-- 透明底；主体约占 60%（614/1024） -->
+  <g filter="url(#shadow1)">
+    <rect x="205" y="205" width="614" height="614" rx="136" fill="url(#aurora)"/>
+    <rect x="208" y="208" width="608" height="608" rx="133" stroke="#FFFFFF" stroke-width="4" stroke-opacity="0.2"/>
+  </g>
+
+  <!-- 中心双向箭头：进一步收缩 -->
+  <g transform="translate(380, 380) scale(11)" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="m16 3 4 4-4 4"/>
+    <path d="M20 7H4"/>
+    <path d="m8 21-4-4 4-4"/>
+    <path d="M4 17h16"/>
+  </g>
+</svg>

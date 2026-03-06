@@ -49,6 +49,7 @@ fn recovery_error(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_log(
     db: &Database,
     relocation_id: &str,
@@ -447,5 +448,242 @@ mod tests {
         assert_eq!(row.state, "ROLLED_BACK");
         assert!(source.exists());
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn recovery_skips_when_no_unfinished_relocations() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&source).expect("create source");
+        fs::create_dir_all(&target).expect("create target");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_recover_stable".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+        })
+        .expect("insert stable relocation");
+
+        let summary = recover_unfinished_relocations(&db).expect("recover");
+        assert_eq!(summary.total, 0);
+        assert_eq!(summary.healthy, 0);
+        assert_eq!(summary.rolled_back, 0);
+        assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn recovery_marks_ambiguous_migrate_state_as_failed() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&source).expect("create source");
+        fs::create_dir_all(&target).expect("create target");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_recover_failed".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: None,
+            state: "SWITCHING".to_string(),
+            health_state: "unknown".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        let summary = recover_unfinished_relocations(&db).expect("recover");
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.failed, 1);
+
+        let row = db
+            .get_relocation("reloc_recover_failed")
+            .expect("query row")
+            .expect("row exists");
+        assert_eq!(row.state, "ROLLBACK_FAILED");
+        assert_eq!(row.health_state, "broken");
+        assert_eq!(
+            row.last_error_code.as_deref(),
+            Some("HEALTH_METADATA_DRIFT")
+        );
+
+        let events = db.list_health_events(10).expect("list events");
+        assert!(events.iter().any(|event| {
+            event.relocation_id == "reloc_recover_failed"
+                && event.check_code == "HEALTH_RECOVERY_FAILED"
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_marks_symlinked_bootstrap_as_healthy() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &source).expect("create symlink");
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_recover_bootstrap_healthy".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "bootstrap".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: None,
+            state: "BOOTSTRAP_INIT".to_string(),
+            health_state: "unknown".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        let summary = recover_unfinished_relocations(&db).expect("recover");
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.healthy, 1);
+
+        let row = db
+            .get_relocation("reloc_recover_bootstrap_healthy")
+            .expect("query row")
+            .expect("row exists");
+        assert_eq!(row.state, "HEALTHY");
+        assert_eq!(row.health_state, "healthy");
+
+        let events = db.list_health_events(10).expect("list events");
+        assert!(events.iter().any(|event| {
+            event.relocation_id == "reloc_recover_bootstrap_healthy"
+                && event.check_code == "HEALTH_RECOVERY_HEALTHY"
+        }));
+    }
+
+    #[test]
+    fn recovery_rolls_back_bootstrap_when_source_missing() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target");
+        assert!(!source.exists());
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_recover_bootstrap_rollback".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "bootstrap".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: None,
+            state: "BOOTSTRAP_INIT".to_string(),
+            health_state: "unknown".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        let summary = recover_unfinished_relocations(&db).expect("recover");
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.rolled_back, 1);
+        assert!(source.exists());
+        assert!(!target.exists());
+
+        let row = db
+            .get_relocation("reloc_recover_bootstrap_rollback")
+            .expect("query row")
+            .expect("row exists");
+        assert_eq!(row.state, "ROLLED_BACK");
+    }
+
+    #[test]
+    fn recovery_marks_migrate_missing_source_after_cleanup_as_failed() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("missing-source");
+        let target = dir.path().join("missing-target");
+        assert!(!source.exists());
+        assert!(!target.exists());
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_recover_missing_source".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: None,
+            state: "SWITCHING".to_string(),
+            health_state: "unknown".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+        })
+        .expect("insert relocation");
+
+        let summary = recover_unfinished_relocations(&db).expect("recover");
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.failed, 1);
+
+        let row = db
+            .get_relocation("reloc_recover_missing_source")
+            .expect("query row")
+            .expect("row exists");
+        assert_eq!(row.state, "ROLLBACK_FAILED");
+        assert_eq!(row.health_state, "broken");
+        assert_eq!(
+            row.last_error_code.as_deref(),
+            Some("ROLLBACK_RESTORE_BACKUP_FAILED")
+        );
     }
 }

@@ -16,6 +16,8 @@ export interface AppScanPath {
 export interface AppScanResult {
   app_id: string;
   display_name: string;
+  icon_path?: string | null;
+  icon_data_url?: string | null;
   tier: "supported" | "experimental" | "blocked";
   detected_paths: AppScanPath[];
   running: boolean;
@@ -45,10 +47,10 @@ export interface RollbackRequest {
   force: boolean;
 }
 
-export interface ExportLogsRequest {
+export interface OperationLogsRequest {
   relocation_id?: string;
   trace_id?: string;
-  output_path?: string;
+  limit?: number;
 }
 
 export interface HealthEventsRequest {
@@ -141,12 +143,4 @@ export interface OperationLogItem {
   message: string | null;
   details: Record<string, unknown>;
   created_at: string;
-}
-
-export interface ExportLogsResult {
-  export_trace_id: string;
-  relocation_id: string | null;
-  trace_id: string | null;
-  output_path: string;
-  exported_count: number;
 }

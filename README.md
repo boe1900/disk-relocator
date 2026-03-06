@@ -14,6 +14,8 @@
 8. [docs/rollback-runbook.md](./docs/rollback-runbook.md)
 9. [docs/faq.md](./docs/faq.md)
 10. [docs/validation-wechat.md](./docs/validation-wechat.md)
+11. [docs/health-fix-and-rollback-guide.md](./docs/health-fix-and-rollback-guide.md)
+12. [docs/github-release-workflow.md](./docs/github-release-workflow.md)
 
 ## V1 冻结规范（执行输入）
 
@@ -48,10 +50,11 @@
 ## Scaffold 启动与校验
 
 1. 安装依赖：`npm install`
-2. 前端构建检查：`npm run build`
-3. Rust 编译检查：`cd src-tauri && cargo check`
+2. 前端质量检查：`npm run check:frontend`
+3. Rust 质量检查（fmt + clippy + test）：`npm run check:rust`
 4. 一键 smoke：`bash tests/acceptance/run-smoke.sh`
-5. 发布门禁：`bash tests/release/run-release-gate.sh`
+5. 发布门禁：`npm run check:release`
+6. GitHub 自动发布：见 [docs/github-release-workflow.md](./docs/github-release-workflow.md)
 
 当前 scaffold 状态：
 - 9 个 Tauri 命令已接入 SQLite 元数据读写（`relocations / operation_logs / health_snapshots`）。
@@ -60,12 +63,12 @@
 - `rollback_relocation` 已执行真实回滚流程（删链接、恢复 `.bak` 或恢复 bootstrap 源路径、清理残留临时目录）。
 - 应用启动时会自动扫描 unfinished 迁移记录并恢复到 `HEALTHY` 或 `ROLLED_BACK`，失败则标记 `ROLLBACK_FAILED`。
 - `migrate_app` 已接入真实预检步骤（进程运行态、源路径权限/类型、目标盘在线可写、空间余量）并写入步骤日志。
-- `export_operation_logs` 可按 `relocation_id/trace_id` 导出结构化日志到 JSON 文件。
+- 操作记录页可直接查看迁移/回滚结果，失败时可展开关键步骤日志。
 - `check_health` 已改为实时健康评估（断链/离线/只读区分），并落盘 `health_snapshots` 与健康状态。
 - 启动后自动运行健康监控器（30s 轮询 + `/Volumes` 挂载事件触发）。
 - 健康面板已支持“异常状态 -> 可执行恢复指引”（重新检测 / 一键回滚）并展示历史健康事件。
-- 已提供 `reconcile_relocations` 对账任务（漂移扫描 + 修复建议 + safe-fix）。
-- 启动后自动运行对账监控器（周期扫描元数据 vs 文件系统漂移）。
+- 已提供 `reconcile_relocations` 对账能力（漂移扫描 + safe-fix 无损自动纠偏）。
+- 启动后自动运行对账监控器（周期扫描并自动纠偏元数据 vs 文件系统漂移）。
 
 ## 直接试用（无需 DevTools）
 
