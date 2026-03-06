@@ -123,9 +123,9 @@
       "bundle_ids": ["com.tencent.xinWeChat"],
       "process_names": ["WeChat"],
       "source_paths": [
-        "~/Library/Containers/com.tencent.xinWeChat"
+        "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files"
       ],
-      "target_path_template": "{target_root}/AppData/WeChat",
+      "target_path_template": "{target_root}/AppData/WeChat/xwechat_files",
       "precheck_rules": {
         "require_process_stopped": true,
         "require_full_disk_access": true,
@@ -135,15 +135,15 @@
       "health_checks": [
         {
           "type": "is_symlink",
-          "path": "~/Library/Containers/com.tencent.xinWeChat"
+          "path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files"
         },
         {
           "type": "target_exists",
-          "path": "{target_root}/AppData/WeChat"
+          "path": "{target_root}/AppData/WeChat/xwechat_files"
         },
         {
           "type": "rw_probe",
-          "path": "{target_root}/AppData/WeChat"
+          "path": "{target_root}/AppData/WeChat/xwechat_files"
         }
       ],
       "rollback_rules": {
@@ -151,7 +151,7 @@
         "restore_backup_dir": true,
         "cleanup_incomplete_target": true
       },
-      "notes": "容器路径受分发来源和系统版本影响，必须二次确认。"
+      "notes": "优先迁移 xwechat_files（聊天记录与附件主数据），降低整目录迁移带来的启动兼容风险。"
     },
     {
       "app_id": "mas-sandbox-containers",

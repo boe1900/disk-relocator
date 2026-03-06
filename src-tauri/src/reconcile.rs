@@ -3,6 +3,7 @@ use crate::migration::cleanup_temp_path;
 use crate::models::{ReconcileIssue, ReconcileResult};
 use chrono::Utc;
 use serde_json::json;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -97,7 +98,7 @@ fn resolve_link_target(source_path: &Path, raw_target: &Path) -> PathBuf {
     }
 }
 
-fn evaluate_record(record: &RelocationRecord) -> Vec<InternalIssue> {
+fn evaluate_record(record: &RelocationRecord, is_latest_for_app: bool) -> Vec<InternalIssue> {
     let mut issues = Vec::new();
     let source_path = Path::new(&record.source_path);
     let target_path = Path::new(&record.target_path);
@@ -181,13 +182,24 @@ fn evaluate_record(record: &RelocationRecord) -> Vec<InternalIssue> {
                 }),
             ));
         } else if !is_active_state(&record.state) {
+            let (suggestion, safe_fix_action) = if is_latest_for_app {
+                (
+                    "run safe-fix to resync metadata state to HEALTHY.",
+                    Some(SafeFixAction::MarkHealthy),
+                )
+            } else {
+                (
+                    "historical relocation record detected; keep metadata unchanged to avoid duplicating active entries.",
+                    None,
+                )
+            };
             issues.push(new_issue(
                 record,
                 "RECON_STATE_STALE_ACTIVE",
                 "warning",
                 "metadata state is stale while filesystem indicates active relocation.",
-                "run safe-fix to resync metadata state to HEALTHY.",
-                Some(SafeFixAction::MarkHealthy),
+                suggestion,
+                safe_fix_action,
                 json!({
                     "state": record.state,
                     "source_path": record.source_path,
@@ -215,13 +227,24 @@ fn evaluate_record(record: &RelocationRecord) -> Vec<InternalIssue> {
             .map(|path| path.exists())
             .unwrap_or(false);
         if !target_path.exists() && !temp_path.exists() && !backup_exists {
+            let (suggestion, safe_fix_action) = if is_latest_for_app {
+                (
+                    "run safe-fix to resync metadata to ROLLED_BACK.",
+                    Some(SafeFixAction::MarkRolledBack),
+                )
+            } else {
+                (
+                    "historical relocation record detected; keep metadata unchanged to avoid rewriting past states.",
+                    None,
+                )
+            };
             issues.push(new_issue(
                 record,
                 "RECON_STATE_STALE_ROLLED_BACK",
                 "warning",
                 "metadata indicates active relocation but filesystem looks rolled back.",
-                "run safe-fix to resync metadata to ROLLED_BACK.",
-                Some(SafeFixAction::MarkRolledBack),
+                suggestion,
+                safe_fix_action,
                 json!({
                     "state": record.state,
                     "source_path": record.source_path,
@@ -360,13 +383,23 @@ pub fn run_reconcile(
         .list_relocations()
         .map_err(|err| format!("list relocations for reconcile failed: {err}"))?;
     let selected: Vec<RelocationRecord> = records.into_iter().take(limit).collect();
+    let mut latest_relocation_ids = HashSet::new();
+    let mut seen_app_ids = HashSet::new();
+    for record in selected.iter() {
+        if seen_app_ids.insert(record.app_id.clone()) {
+            latest_relocation_ids.insert(record.relocation_id.clone());
+        }
+    }
 
     let mut issues = Vec::new();
     let mut fixed_count = 0usize;
     let mut safe_fixable_count = 0usize;
 
     for record in selected.iter() {
-        let found = evaluate_record(record);
+        let found = evaluate_record(
+            record,
+            latest_relocation_ids.contains(&record.relocation_id),
+        );
         for mut internal in found {
             if internal.safe_fix_action.is_some() {
                 safe_fixable_count += 1;
@@ -650,6 +683,73 @@ mod tests {
             .expect("row exists");
         assert_eq!(row.state, "HEALTHY");
         assert_eq!(row.health_state, "healthy");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_does_not_auto_fix_stale_active_for_historical_record() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &source).expect("create symlink");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_hist_old".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "PRECHECK_FAILED".to_string(),
+            health_state: "unknown".to_string(),
+            last_error_code: Some("PRECHECK_TARGET_PATH_EXISTS".to_string()),
+            trace_id: "tr_seed_old".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:00:00Z".to_string(),
+            updated_at: "2026-03-05T10:01:00Z".to_string(),
+            completed_at: Some("2026-03-05T10:01:00Z".to_string()),
+        })
+        .expect("insert historical relocation");
+
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_hist_latest".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            tier: "supported".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_seed_latest".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:02:00Z".to_string(),
+            updated_at: "2026-03-05T10:03:00Z".to_string(),
+            completed_at: Some("2026-03-05T10:03:00Z".to_string()),
+        })
+        .expect("insert latest relocation");
+
+        let result = run_reconcile(&db, "tr_reconcile_hist", true, 50, false).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.fixed_count, 0);
+        assert_eq!(result.issues[0].code, "RECON_STATE_STALE_ACTIVE");
+        assert!(result.issues[0].safe_fix_action.is_none());
+        assert!(!result.issues[0].safe_fix_applied);
+
+        let old_row = db
+            .get_relocation("reloc_reconcile_hist_old")
+            .expect("query old row")
+            .expect("old row exists");
+        assert_eq!(old_row.state, "PRECHECK_FAILED");
     }
 
     #[test]

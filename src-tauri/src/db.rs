@@ -358,11 +358,21 @@ impl Database {
         let connection = self.connect()?;
         let mut stmt = connection.prepare(
             r#"
+            WITH ranked AS (
+              SELECT relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
+                     state, health_state, last_error_code, trace_id, created_at, updated_at,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY app_id
+                       ORDER BY datetime(updated_at) DESC, rowid DESC
+                     ) AS rank_latest
+              FROM relocations
+              WHERE state IN ('HEALTHY', 'DEGRADED', 'BROKEN')
+            )
             SELECT relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
                    state, health_state, last_error_code, trace_id, created_at, updated_at
-            FROM relocations
-            WHERE state IN ('HEALTHY', 'DEGRADED', 'BROKEN')
-            ORDER BY datetime(updated_at) DESC, rowid DESC
+            FROM ranked
+            WHERE rank_latest = 1
+            ORDER BY datetime(updated_at) DESC
             "#,
         )?;
         let rows = stmt.query_map([], row_to_relocation)?;
@@ -865,12 +875,33 @@ mod tests {
         })
         .expect("insert active new");
 
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_active_wechat_latest".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            tier: "experimental".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source-latest".to_string(),
+            target_root: "/Volumes/TestSSD".to_string(),
+            target_path: "/Volumes/TestSSD/AppData/WeChatLatest".to_string(),
+            backup_path: None,
+            state: "BROKEN".to_string(),
+            health_state: "broken".to_string(),
+            last_error_code: Some("HEALTH_SYMLINK_MISSING".to_string()),
+            trace_id: "tr_seed_4".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: "2026-03-05T10:06:00Z".to_string(),
+            updated_at: "2026-03-05T10:07:00Z".to_string(),
+            completed_at: None,
+        })
+        .expect("insert active latest wechat");
+
         let rows = db
             .list_health_monitoring_relocations()
             .expect("list monitoring rows");
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].relocation_id, "reloc_active_new");
-        assert_eq!(rows[1].relocation_id, "reloc_active_old");
+        assert_eq!(rows[0].relocation_id, "reloc_active_wechat_latest");
+        assert_eq!(rows[1].relocation_id, "reloc_active_new");
     }
 
     #[test]
