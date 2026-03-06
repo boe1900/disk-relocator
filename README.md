@@ -35,29 +35,19 @@ Disk Relocator 是一个基于 Vue 3 + Tauri + Rust 的 macOS 桌面工具，用
 4. 迁移完成后在「健康检查」确认状态为健康。
 5. 需要恢复时，在对应记录执行「回滚」。
 
-## Release 与安装说明
+## 安装与首次打开（当前未签名版本）
 
-### 免费发布模式（默认）
+由于当前未使用 Apple Developer 签名/公证，macOS 可能拦截首次打开。按以下步骤操作即可使用。
 
-- GitHub Actions `Release` 默认不做 Apple 签名/公证，可直接生成 `.dmg`。
-- 用户安装可能遇到 Gatekeeper 提示，需要右键打开或移除隔离属性。
+1. 下载并挂载 `.dmg`，将 `Disk Relocator.app` 拖到 `/Applications`。
+2. 首次打开时，先在「应用程序」中右键应用，选择「打开」。
+3. 若仍被拦截，到「系统设置 -> 隐私与安全性」，在底部点击「仍要打开」。
 
-### 付费签名公证模式（开关）
+如果系统依旧阻止启动，可在终端执行：
 
-- 在 `Release` workflow 中设 `sign_and_notarize=true`，或仓库变量 `RELEASE_SIGN_AND_NOTARIZE=true`。
-- 需配置 Apple Developer 相关 secrets（证书 + 公证凭据）。
+```bash
+xattr -dr com.apple.quarantine /Applications/"Disk Relocator.app"
+open -a "Disk Relocator"
+```
 
-详细见：[docs/github-release-workflow.md](./docs/github-release-workflow.md)
-
-## 文档索引
-
-- 方案与边界：[docs/01-feasibility-and-boundary.md](./docs/01-feasibility-and-boundary.md)
-- 兼容性分级：[docs/02-compatibility-tier-list.md](./docs/02-compatibility-tier-list.md)
-- 迁移回滚流程：[docs/03-migration-and-rollback-flow.md](./docs/03-migration-and-rollback-flow.md)
-- MVP 验收：[docs/04-mvp-spec-and-acceptance.md](./docs/04-mvp-spec-and-acceptance.md)
-- 风险与测试计划：[docs/05-risk-and-test-plan.md](./docs/05-risk-and-test-plan.md)
-- 三阶段路线图：[docs/ROADMAP.md](./docs/ROADMAP.md)
-- 任务清单：[docs/TODO.md](./docs/TODO.md)
-- 微信手工验证：[docs/validation-wechat.md](./docs/validation-wechat.md)
-- 健康修复与回滚说明：[docs/health-fix-and-rollback-guide.md](./docs/health-fix-and-rollback-guide.md)
-- 发布流程：[docs/github-release-workflow.md](./docs/github-release-workflow.md)
+注意：每次下载的新版本如果再次被标记隔离，可能需要重复一次上述步骤。
