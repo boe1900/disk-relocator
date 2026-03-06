@@ -220,20 +220,39 @@ jobs:
             echo "notary_mode=apple_id" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and upload release assets
-        id: tauri
+      - name: Build and upload release assets (signed)
+        if: ${{ needs.prepare.outputs.sign_and_notarize == 'true' }}
+        id: tauri_signed
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_TEAM_ID: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && secrets.APPLE_TEAM_ID || '' }}
-          APPLE_ID: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'apple_id' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'apple_id' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_API_KEY: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'api_key' && secrets.APPLE_API_KEY || '' }}
-          APPLE_API_ISSUER: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'api_key' && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY_PATH: ${{ needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.notary_mode == 'api_key' && steps.apple-secrets.outputs.apple_api_key_path || '' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ steps.apple-secrets.outputs.notary_mode == 'apple_id' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ steps.apple-secrets.outputs.notary_mode == 'apple_id' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ steps.apple-secrets.outputs.notary_mode == 'api_key' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ steps.apple-secrets.outputs.notary_mode == 'api_key' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_PATH: ${{ steps.apple-secrets.outputs.notary_mode == 'api_key' && steps.apple-secrets.outputs.apple_api_key_path || '' }}
+        with:
+          projectPath: .
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Disk Relocator ${{ needs.prepare.outputs.tag }}"
+          releaseBody: |
+            Automated release for `${{ needs.prepare.outputs.tag }}`.
+            Built from commit `${{ github.sha }}`.
+          generateReleaseNotes: true
+          releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          args: --target aarch64-apple-darwin --bundles dmg
+
+      - name: Build and upload release assets (unsigned)
+        if: ${{ needs.prepare.outputs.sign_and_notarize != 'true' }}
+        id: tauri_unsigned
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: .
           tagName: ${{ needs.prepare.outputs.tag }}
@@ -281,5 +300,5 @@ jobs:
             echo "- release draft: \`${{ needs.prepare.outputs.draft }}\`"
             echo "- prerelease: \`${{ needs.prepare.outputs.prerelease }}\`"
             echo "- sign and notarize: \`${{ needs.prepare.outputs.sign_and_notarize }}\`"
-            echo "- release url: ${{ steps.tauri.outputs.releaseHtmlUrl }}"
+            echo "- release url: ${{ steps.tauri_signed.outputs.releaseHtmlUrl || steps.tauri_unsigned.outputs.releaseHtmlUrl }}"
           } >> "$GITHUB_STEP_SUMMARY"
