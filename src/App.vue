@@ -19,6 +19,7 @@ import type {
   RollbackRequest
 } from "./types/contracts";
 import { useI18n } from "./i18n";
+import { formatCommandError } from "./utils/error";
 
 interface AppCard {
   id: string;
@@ -168,7 +169,7 @@ async function refreshAll(): Promise<void> {
     relocations.value = nextRelocations;
     systemDisk.value = nextSystemDisk;
   } catch (err) {
-    error.value = t("app.messages.loadFailed", { error: String(err) });
+    error.value = t("app.messages.loadFailed", { error: formatCommandError(err) });
   } finally {
     loading.value = false;
   }
@@ -204,7 +205,7 @@ async function handleRestore(appId: string): Promise<void> {
     info.value = t("app.messages.restoreDone", { name: targetCard.name });
     await refreshAll();
   } catch (err) {
-    error.value = t("app.messages.restoreFailed", { error: String(err) });
+    error.value = t("app.messages.restoreFailed", { error: formatCommandError(err) });
   }
 }
 

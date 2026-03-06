@@ -368,6 +368,39 @@ describe("MigrationDialog", () => {
     expect(wrapper.emitted("done")).toBeUndefined();
   });
 
+  it("renders command error object instead of [object Object]", async () => {
+    invokeMock.mockRejectedValue({
+      code: "MIGRATE_COPY_FAILED",
+      message: "failed during copy source -> temp.",
+      trace_id: "tr_object_error_1",
+      details: {
+        error: "Operation not permitted (os error 1)"
+      }
+    });
+
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp(),
+        disks
+      }
+    });
+    await flushPromises();
+
+    const startBtn = wrapper
+      .findAll("button")
+      .find((btn) => btn.text().includes("开始迁移"));
+    expect(startBtn).toBeDefined();
+    await startBtn!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("MIGRATE_COPY_FAILED");
+    expect(wrapper.text()).toContain("Operation not permitted (os error 1)");
+    expect(wrapper.text()).toContain("trace_id=tr_object_error_1");
+    expect(wrapper.text()).not.toContain("[object Object]");
+  });
+
   it("emits close when cancel is clicked", async () => {
     const wrapper = mount(MigrationDialog, {
       props: {

@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { computed, onMounted, ref } from "vue";
 import type { RelocationSummary, RelocationResult, RollbackRequest } from "../types/contracts";
+import { formatCommandError } from "../utils/error";
 
 const listPayload = ref<RelocationSummary[]>([]);
 const selectedRelocationId = ref("");
@@ -19,7 +20,7 @@ async function onList(): Promise<void> {
       selectedRelocationId.value = listPayload.value[0].relocation_id;
     }
   } catch (err) {
-    error.value = String(err);
+    error.value = formatCommandError(err);
   } finally {
     loading.value = false;
   }
@@ -39,7 +40,7 @@ async function onRollback(): Promise<void> {
     rollbackPayload.value = await invoke<RelocationResult>("rollback_relocation", { req });
     await onList();
   } catch (err) {
-    error.value = String(err);
+    error.value = formatCommandError(err);
   } finally {
     loading.value = false;
   }

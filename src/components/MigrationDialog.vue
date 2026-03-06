@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { AlertCircle, ArrowRightLeft, CheckCircle2, HardDrive } from "lucide-vue-next";
 import type { AppScanResult, DiskStatus, MigrateRequest, RelocationResult } from "../types/contracts";
 import { useI18n } from "../i18n";
+import { formatCommandError } from "../utils/error";
 
 interface SourceSummary {
   exists: boolean;
@@ -255,7 +256,7 @@ async function onPickTargetRoot(): Promise<void> {
     targetRoot.value = picked;
     error.value = null;
   } catch (err) {
-    error.value = String(err);
+    error.value = formatCommandError(err);
   } finally {
     selectingTargetRoot.value = false;
   }
@@ -299,7 +300,7 @@ async function onStartMigration(): Promise<void> {
   } catch (err) {
     stopProgressAnimation();
     migrationStep.value = 0;
-    error.value = t("migrationDialog.errors.startFailed", { error: String(err) });
+    error.value = t("migrationDialog.errors.startFailed", { error: formatCommandError(err) });
   } finally {
     loading.value = false;
   }

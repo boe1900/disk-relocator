@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { computed, onMounted, ref } from "vue";
 import type { OperationLogItem, OperationLogsRequest, RelocationSummary } from "../types/contracts";
 import { useI18n } from "../i18n";
+import { formatCommandError } from "../utils/error";
 
 type UserActionType = "migrate" | "rollback" | "unknown";
 type UserActionResult = "success" | "failed" | "running";
@@ -176,7 +177,7 @@ async function loadOperationRecords(): Promise<void> {
   try {
     recordsRaw.value = await invoke<OperationLogItem[]>("list_operation_logs", { req });
   } catch (err) {
-    error.value = t("logs.errorListFailed", { error: String(err) });
+    error.value = t("logs.errorListFailed", { error: formatCommandError(err) });
   } finally {
     loadingRecords.value = false;
   }

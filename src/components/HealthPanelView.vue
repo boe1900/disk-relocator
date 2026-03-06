@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { onBeforeUnmount, onMounted, computed, ref, watch } from "vue";
 import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, HardDrive } from "lucide-vue-next";
 import { useI18n } from "../i18n";
+import { formatCommandError } from "../utils/error";
 import type {
   DiskStatus,
   HealthEvent,
@@ -118,7 +119,7 @@ async function refreshPanel(): Promise<void> {
     healthPayload.value = health;
     historyPayload.value = history;
   } catch (err) {
-    error.value = t("health.errorRefreshFailed", { error: String(err) });
+    error.value = t("health.errorRefreshFailed", { error: formatCommandError(err) });
   } finally {
     loading.value = false;
   }
@@ -145,7 +146,7 @@ async function onSelfCheck(): Promise<void> {
       remaining
     });
   } catch (err) {
-    error.value = t("health.errorSelfCheckFailed", { error: String(err) });
+    error.value = t("health.errorSelfCheckFailed", { error: formatCommandError(err) });
   } finally {
     selfChecking.value = false;
   }
@@ -161,7 +162,7 @@ async function onRollback(relocationId: string): Promise<void> {
     info.value = t("health.infoRollbackDone", { id: relocationId });
     await refreshPanel();
   } catch (err) {
-    error.value = t("health.errorRollbackFailed", { error: String(err) });
+    error.value = t("health.errorRollbackFailed", { error: formatCommandError(err) });
   } finally {
     rollbackingRelocationId.value = null;
   }
