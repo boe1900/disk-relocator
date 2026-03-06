@@ -149,13 +149,25 @@ jobs:
           generateReleaseNotes: true
           releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
-          args: --target aarch64-apple-darwin
+          args: --target aarch64-apple-darwin --bundles dmg
+
+      - name: Ensure dmg exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No dmg produced under bundle/dmg" >&2
+            exit 1
+          fi
+          printf '%s\n' "${files[@]}"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: disk-relocator-${{ needs.prepare.outputs.tag }}-macos-aarch64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/**/*
+          name: disk-relocator-${{ needs.prepare.outputs.tag }}-dmg-aarch64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - name: Publish summary

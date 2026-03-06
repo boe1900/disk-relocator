@@ -1,7 +1,7 @@
 # GitHub Release 发布流程
 
 本文描述仓库内 `Release` GitHub Actions 工作流的使用方式。  
-当前目标是自动发布 **macOS Apple Silicon (`aarch64`)** 安装包。
+当前目标是自动发布 **macOS Apple Silicon (`aarch64`) 的 `.dmg` 安装包**。
 
 ## 触发方式
 
@@ -19,14 +19,14 @@
    - `src-tauri/Cargo.toml` 的 `version`
    - 以及 tag 必须等于 `v<version>`
 2. 发布门禁：`npm run check:release`
-3. 打包目标：`--target aarch64-apple-darwin`
+3. 打包目标：`--target aarch64-apple-darwin --bundles dmg`
 
 如果上述任一步骤失败，Release 不会发布。
 
 ## Release 产物
 
-工作流会通过 `tauri-apps/tauri-action` 自动上传构建产物到 GitHub Release。  
-同时会把 `src-tauri/target/aarch64-apple-darwin/release/bundle/**` 作为 workflow artifact 保存，便于排障和留档。
+工作流会通过 `tauri-apps/tauri-action` 自动上传 `.dmg` 到 GitHub Release。  
+同时会把 `src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg` 作为 workflow artifact 保存，便于排障和留档。
 
 ## 推荐操作顺序
 
