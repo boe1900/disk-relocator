@@ -7,6 +7,15 @@ export interface CommandError {
 }
 
 export interface AppScanPath {
+  unit_id?: string;
+  display_name?: string;
+  default_enabled?: boolean;
+  enabled?: boolean;
+  risk_level?: "stable" | "cautious" | "high" | string;
+  requires_confirmation?: boolean;
+  blocked_reason?: string;
+  allow_bootstrap_if_source_missing?: boolean;
+  category?: string;
   path: string;
   exists: boolean;
   is_symlink: boolean;
@@ -16,9 +25,11 @@ export interface AppScanPath {
 export interface AppScanResult {
   app_id: string;
   display_name: string;
+  description_i18n?: Record<string, string>;
   icon_path?: string | null;
   icon_data_url?: string | null;
-  tier: "supported" | "experimental" | "blocked";
+  availability: "active" | "blocked" | "deprecated";
+  blocked_reason?: string | null;
   detected_paths: AppScanPath[];
   running: boolean;
   allow_bootstrap_if_source_missing: boolean;
@@ -36,9 +47,10 @@ export interface DiskStatus {
 
 export interface MigrateRequest {
   app_id: string;
+  unit_id?: string;
   target_root: string;
   mode: "bootstrap" | "migrate";
-  allow_experimental: boolean;
+  confirm_high_risk: boolean;
   cleanup_backup_after_migrate?: boolean;
 }
 

@@ -7,7 +7,7 @@ use crate::models::{
     HealthStatus, MigrateRequest, OperationLogItem, OperationLogsRequest, ReconcileRequest,
     ReconcileResult, RelocationResult, RelocationSummary, RollbackRequest,
 };
-use crate::profiles::{self, AppProfile};
+use crate::profiles::{self, AppProfile, RelocationUnit};
 use crate::{
     bootstrap::{execute_bootstrap_switch, rollback_bootstrap_switch, BootstrapSwitchError},
     health,
@@ -64,13 +64,125 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
-fn target_path(profile: &AppProfile, target_root: &str) -> String {
-    if profile.target_path_template.is_empty() {
-        return format!("{target_root}/AppData/{}", profile.display_name);
+#[derive(Debug, Clone)]
+struct MigrationUnitPlan {
+    unit_id: String,
+    display_name: String,
+    source_path: String,
+    target_path_template: String,
+    default_enabled: bool,
+    enabled: bool,
+    risk_level: String,
+    requires_confirmation: bool,
+    blocked_reason: Option<String>,
+    allow_bootstrap_if_source_missing: bool,
+    category: String,
+}
+
+fn render_target_path(template: &str, target_root: &str, fallback_display_name: &str) -> String {
+    if template.trim().is_empty() {
+        return format!("{target_root}/AppData/{fallback_display_name}");
     }
-    profile
-        .target_path_template
-        .replace("{target_root}", target_root)
+    template.replace("{target_root}", target_root)
+}
+
+fn normalize_profile_unit(index: usize, raw_unit: &RelocationUnit) -> Option<MigrationUnitPlan> {
+    let source_path = raw_unit.source_path.trim();
+    if source_path.is_empty() {
+        return None;
+    }
+
+    let unit_id = if raw_unit.unit_id.trim().is_empty() {
+        format!("unit-{}", index + 1)
+    } else {
+        raw_unit.unit_id.trim().to_string()
+    };
+
+    let display_name = if raw_unit.display_name.trim().is_empty() {
+        unit_id.clone()
+    } else {
+        raw_unit.display_name.trim().to_string()
+    };
+
+    Some(MigrationUnitPlan {
+        unit_id,
+        display_name,
+        source_path: expand_tilde(source_path),
+        target_path_template: raw_unit.target_path_template.clone(),
+        default_enabled: raw_unit.default_enabled,
+        enabled: raw_unit.enabled,
+        risk_level: raw_unit.risk_level.clone(),
+        requires_confirmation: raw_unit.requires_confirmation,
+        blocked_reason: raw_unit.blocked_reason.clone(),
+        allow_bootstrap_if_source_missing: raw_unit.allow_bootstrap_if_source_missing,
+        category: raw_unit.category.clone(),
+    })
+}
+
+fn profile_relocation_units(profile: &AppProfile) -> Vec<MigrationUnitPlan> {
+    let units = profile
+        .relocation_units
+        .iter()
+        .enumerate()
+        .filter_map(|(index, unit)| normalize_profile_unit(index, unit))
+        .collect::<Vec<_>>();
+
+    let mut unique = Vec::new();
+    for unit in units {
+        if unique
+            .iter()
+            .any(|item: &MigrationUnitPlan| item.unit_id == unit.unit_id)
+        {
+            continue;
+        }
+        unique.push(unit);
+    }
+    unique
+}
+
+fn source_path_exists(path: &str) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+fn pick_default_unit(units: &[MigrationUnitPlan]) -> Option<MigrationUnitPlan> {
+    if let Some(unit) = units
+        .iter()
+        .find(|unit| unit.enabled && unit.default_enabled && source_path_exists(&unit.source_path))
+    {
+        return Some(unit.clone());
+    }
+    if let Some(unit) = units
+        .iter()
+        .find(|unit| unit.enabled && unit.default_enabled)
+    {
+        return Some(unit.clone());
+    }
+    if let Some(unit) = units
+        .iter()
+        .find(|unit| unit.enabled && source_path_exists(&unit.source_path))
+    {
+        return Some(unit.clone());
+    }
+    units.iter().find(|unit| unit.enabled).cloned()
+}
+
+fn pick_relocation_unit(profile: &AppProfile, unit_id: Option<&str>) -> Option<MigrationUnitPlan> {
+    let units = profile_relocation_units(profile);
+    if units.is_empty() {
+        return None;
+    }
+
+    if let Some(unit_id) = unit_id {
+        return units
+            .into_iter()
+            .find(|unit| unit.unit_id == unit_id.trim());
+    }
+
+    pick_default_unit(&units)
+}
+
+fn target_path_for_unit(unit: &MigrationUnitPlan, target_root: &str) -> String {
+    render_target_path(&unit.target_path_template, target_root, &unit.display_name)
 }
 
 fn db_error(trace_id: &str, action: &str, err: impl ToString) -> CommandError {
@@ -681,6 +793,27 @@ fn list_mounted_volume_roots() -> Vec<String> {
     roots
 }
 
+fn mount_root_from_target_root(target_root: &str) -> Option<String> {
+    let trimmed = target_root.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "/" {
+        return Some("/".to_string());
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("/Volumes/") {
+        let volume_name = rest.split('/').find(|segment| !segment.is_empty())?;
+        return Some(format!("/Volumes/{volume_name}"));
+    }
+
+    if trimmed == "/Volumes" || trimmed == "/Volumes/" {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
 fn directory_size(path: &Path) -> std::io::Result<u64> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
@@ -1053,13 +1186,12 @@ pub fn scan_apps() -> Result<Vec<AppScanResult>, CommandError> {
             let matched_bundle = match_profile_bundle(&profile, &installed_bundles);
             let matched_bundle_path = matched_bundle.as_deref();
             let installed = matched_bundle.is_some();
+            let relocation_units = profile_relocation_units(&profile);
             let mut detected_any_path = false;
-            let detected_paths = profile
-                .source_paths
+            let detected_paths = relocation_units
                 .iter()
-                .map(|path| {
-                    let expanded = expand_tilde(path);
-                    let source = Path::new(&expanded);
+                .map(|unit| {
+                    let source = Path::new(&unit.source_path);
                     match fs::symlink_metadata(source) {
                         Ok(metadata) => {
                             detected_any_path = true;
@@ -1070,14 +1202,36 @@ pub fn scan_apps() -> Result<Vec<AppScanResult>, CommandError> {
                                 directory_size(source).unwrap_or(0)
                             };
                             AppScanPath {
-                                path: expanded,
+                                unit_id: Some(unit.unit_id.clone()),
+                                display_name: Some(unit.display_name.clone()),
+                                default_enabled: Some(unit.default_enabled),
+                                enabled: Some(unit.enabled),
+                                risk_level: Some(unit.risk_level.clone()),
+                                requires_confirmation: Some(unit.requires_confirmation),
+                                blocked_reason: unit.blocked_reason.clone(),
+                                allow_bootstrap_if_source_missing: Some(
+                                    unit.allow_bootstrap_if_source_missing,
+                                ),
+                                category: Some(unit.category.clone()),
+                                path: unit.source_path.clone(),
                                 exists: true,
                                 is_symlink,
                                 size_bytes,
                             }
                         }
                         Err(_) => AppScanPath {
-                            path: expanded,
+                            unit_id: Some(unit.unit_id.clone()),
+                            display_name: Some(unit.display_name.clone()),
+                            default_enabled: Some(unit.default_enabled),
+                            enabled: Some(unit.enabled),
+                            risk_level: Some(unit.risk_level.clone()),
+                            requires_confirmation: Some(unit.requires_confirmation),
+                            blocked_reason: unit.blocked_reason.clone(),
+                            allow_bootstrap_if_source_missing: Some(
+                                unit.allow_bootstrap_if_source_missing,
+                            ),
+                            category: Some(unit.category.clone()),
+                            path: unit.source_path.clone(),
                             exists: false,
                             is_symlink: false,
                             size_bytes: 0,
@@ -1097,9 +1251,11 @@ pub fn scan_apps() -> Result<Vec<AppScanResult>, CommandError> {
             Some(AppScanResult {
                 app_id: profile.app_id,
                 display_name,
+                description_i18n: profile.description_i18n.clone(),
                 icon_path,
                 icon_data_url,
-                tier: profile.tier,
+                availability: profile.availability.clone(),
+                blocked_reason: profile.blocked_reason.clone(),
                 detected_paths,
                 running,
                 allow_bootstrap_if_source_missing: profile
@@ -1123,7 +1279,9 @@ pub fn get_disk_status(state: State<'_, AppState>) -> Result<Vec<DiskStatus>, Co
 
     let mut roots = BTreeSet::new();
     for row in records {
-        roots.insert(row.target_root);
+        if let Some(root) = mount_root_from_target_root(&row.target_root) {
+            roots.insert(root);
+        }
     }
     for root in list_mounted_volume_roots() {
         roots.insert(root);
@@ -1242,6 +1400,90 @@ pub fn get_system_disk_status() -> Result<DiskStatus, CommandError> {
 }
 
 #[tauri::command]
+pub fn open_in_finder(path: String) -> Result<(), CommandError> {
+    let trace_id = new_trace_id();
+    let input = path.trim();
+    if input.is_empty() {
+        return Err(CommandError::new(
+            "OPEN_PATH_INVALID",
+            "path cannot be empty.",
+            trace_id,
+            false,
+            json!({ "path": path }),
+        ));
+    }
+
+    let resolved = expand_tilde(input);
+    let resolved_path = PathBuf::from(&resolved);
+    if !resolved_path.is_absolute() {
+        return Err(CommandError::new(
+            "OPEN_PATH_INVALID",
+            "path must be absolute.",
+            trace_id,
+            false,
+            json!({ "path": resolved }),
+        ));
+    }
+
+    if !resolved_path.exists() {
+        return Err(CommandError::new(
+            "OPEN_PATH_NOT_FOUND",
+            "path does not exist.",
+            trace_id,
+            false,
+            json!({ "path": resolved }),
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("/usr/bin/open")
+            .arg("-R")
+            .arg(&resolved_path)
+            .status()
+            .map_err(|err| {
+                CommandError::new(
+                    "OPEN_PATH_FAILED",
+                    "failed to open path in Finder.",
+                    trace_id.clone(),
+                    true,
+                    json!({
+                        "path": resolved,
+                        "error": err.to_string()
+                    }),
+                )
+            })?;
+
+        if !status.success() {
+            return Err(CommandError::new(
+                "OPEN_PATH_FAILED",
+                "failed to open path in Finder.",
+                trace_id,
+                true,
+                json!({
+                    "path": resolved,
+                    "status": status.code()
+                }),
+            ));
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = resolved_path;
+        return Err(CommandError::new(
+            "OPEN_PATH_UNSUPPORTED",
+            "open_in_finder is only supported on macOS.",
+            trace_id,
+            false,
+            json!({}),
+        ));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub fn migrate_app(
     req: MigrateRequest,
     state: State<'_, AppState>,
@@ -1272,52 +1514,77 @@ pub fn migrate_app(
             }
         };
 
-    if profile.tier == "blocked" {
+    if profile.availability == "blocked" || profile.availability == "deprecated" {
         return Err(CommandError::new(
-            "PRECHECK_TIER_BLOCKED",
-            "Blocked profile cannot be migrated.",
+            "PRECHECK_APP_BLOCKED",
+            "Blocked or deprecated profile cannot be migrated.",
             trace_id,
             false,
-            json!({ "app_id": profile.app_id }),
+            json!({
+              "app_id": profile.app_id,
+              "availability": profile.availability
+            }),
         ));
     }
 
-    if profile.tier == "experimental" && !req.allow_experimental {
-        return Err(CommandError::new(
-            "PRECHECK_EXPERIMENTAL_NOT_CONFIRMED",
-            "Experimental profile requires explicit confirmation.",
-            trace_id,
-            true,
-            json!({ "app_id": profile.app_id }),
-        ));
-    }
-
-    if req.mode == "bootstrap" && !profile.precheck_rules.allow_bootstrap_if_source_missing {
-        return Err(CommandError::new(
-            "PRECHECK_BOOTSTRAP_NOT_ALLOWED",
-            "This profile does not allow bootstrap mode.",
-            trace_id,
-            false,
-            json!({ "app_id": profile.app_id }),
-        ));
-    }
-
-    let source_path = profile
-        .source_paths
-        .first()
-        .map(|path| expand_tilde(path))
-        .ok_or_else(|| {
-            CommandError::new(
-                "PRECHECK_SOURCE_NOT_FOUND",
-                "No source path defined for profile.",
+    let unit_hint = req.unit_id.as_deref();
+    let selected_unit = pick_relocation_unit(&profile, unit_hint).ok_or_else(|| {
+        if let Some(unit_id) = unit_hint {
+            return CommandError::new(
+                "PRECHECK_UNIT_NOT_FOUND",
+                "No relocation unit found for app_id and unit_id.",
                 trace_id.clone(),
                 false,
-                json!({ "app_id": profile.app_id }),
-            )
-        })?;
+                json!({ "app_id": profile.app_id, "unit_id": unit_id }),
+            );
+        }
+        CommandError::new(
+            "PRECHECK_SOURCE_NOT_FOUND",
+            "No source path defined for profile.",
+            trace_id.clone(),
+            false,
+            json!({ "app_id": profile.app_id }),
+        )
+    })?;
+    let source_path = selected_unit.source_path.clone();
+    let selected_unit_id = selected_unit.unit_id.clone();
+
+    if !selected_unit.enabled || selected_unit.blocked_reason.is_some() {
+        return Err(CommandError::new(
+            "PRECHECK_UNIT_BLOCKED",
+            "Selected relocation unit is disabled or blocked.",
+            trace_id,
+            false,
+            json!({
+              "app_id": profile.app_id,
+              "unit_id": selected_unit_id,
+              "blocked_reason": selected_unit.blocked_reason.clone()
+            }),
+        ));
+    }
+
+    if selected_unit.requires_confirmation && !req.confirm_high_risk {
+        return Err(CommandError::new(
+            "PRECHECK_UNIT_CONFIRMATION_REQUIRED",
+            "Selected relocation unit requires explicit confirmation.",
+            trace_id,
+            true,
+            json!({ "app_id": profile.app_id, "unit_id": selected_unit_id }),
+        ));
+    }
+
+    if req.mode == "bootstrap" && !selected_unit.allow_bootstrap_if_source_missing {
+        return Err(CommandError::new(
+            "PRECHECK_BOOTSTRAP_NOT_ALLOWED",
+            "This relocation unit does not allow bootstrap mode.",
+            trace_id,
+            false,
+            json!({ "app_id": profile.app_id, "unit_id": selected_unit_id }),
+        ));
+    }
 
     let relocation_id = new_relocation_id();
-    let target_path = target_path(&profile, &req.target_root);
+    let target_path = target_path_for_unit(&selected_unit, &req.target_root);
     let backup_path = if req.mode == "migrate" {
         Some(format!("{source_path}.bak"))
     } else {
@@ -1330,7 +1597,6 @@ pub fn migrate_app(
         .insert_relocation(&NewRelocationRecord {
             relocation_id: relocation_id.clone(),
             app_id: profile.app_id.clone(),
-            tier: profile.tier.clone(),
             mode: req.mode.clone(),
             source_path: source_path.clone(),
             target_root: req.target_root.clone(),
@@ -1367,12 +1633,13 @@ pub fn migrate_app(
         source_size_bytes = check_source(
             &req.mode,
             &source_path,
-            profile.precheck_rules.allow_bootstrap_if_source_missing,
+            selected_unit.allow_bootstrap_if_source_missing,
             profile.precheck_rules.require_full_disk_access,
             &trace_id,
         )?;
         Ok(json!({
           "source_path": source_path,
+          "unit_id": selected_unit_id,
           "source_size_bytes": source_size_bytes,
           "mode": req.mode
         }))
@@ -2972,7 +3239,7 @@ pub fn check_health(state: State<'_, AppState>) -> Result<Vec<HealthStatus>, Com
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profiles::PrecheckRules;
+    use crate::profiles::{PrecheckRules, RelocationUnit};
     use tempfile::tempdir;
 
     #[test]
@@ -3078,34 +3345,182 @@ mod tests {
     }
 
     #[test]
-    fn target_path_uses_template_placeholder() {
+    fn profile_relocation_units_filters_empty_source_units() {
         let profile = AppProfile {
-            app_id: "wechat-non-mas".to_string(),
-            display_name: "WeChat".to_string(),
-            tier: "experimental".to_string(),
+            app_id: "demo".to_string(),
+            display_name: "Demo".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
             bundle_ids: vec![],
             process_names: vec![],
-            source_paths: vec![],
-            target_path_template: "{target_root}/AppData/WeChat".to_string(),
+            relocation_units: vec![
+                RelocationUnit {
+                    unit_id: "u_media".to_string(),
+                    display_name: "Media".to_string(),
+                    source_path: "~/Library/Demo/Media".to_string(),
+                    target_path_template: "{target_root}/AppData/Demo/Media".to_string(),
+                    default_enabled: true,
+                    enabled: true,
+                    risk_level: "stable".to_string(),
+                    requires_confirmation: false,
+                    blocked_reason: None,
+                    allow_bootstrap_if_source_missing: false,
+                    category: "app-data".to_string(),
+                },
+                RelocationUnit {
+                    unit_id: "u_empty".to_string(),
+                    display_name: "Empty".to_string(),
+                    source_path: "   ".to_string(),
+                    target_path_template: "{target_root}/AppData/Demo/Empty".to_string(),
+                    default_enabled: true,
+                    enabled: true,
+                    risk_level: "stable".to_string(),
+                    requires_confirmation: false,
+                    blocked_reason: None,
+                    allow_bootstrap_if_source_missing: false,
+                    category: "app-data".to_string(),
+                },
+            ],
             precheck_rules: PrecheckRules::default(),
         };
-        let target = target_path(&profile, "/Volumes/TestSSD");
+
+        let units = profile_relocation_units(&profile);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].unit_id, "u_media");
+        assert!(units[0].source_path.ends_with("/Library/Demo/Media"));
+    }
+
+    #[test]
+    fn pick_relocation_unit_prefers_existing_default_path() {
+        let dir = tempdir().expect("create temp dir");
+        let missing_path = dir.path().join("missing");
+        let existing_path = dir.path().join("existing");
+        fs::create_dir_all(&existing_path).expect("create existing source path");
+
+        let profile = AppProfile {
+            app_id: "demo".to_string(),
+            display_name: "Demo".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
+            bundle_ids: vec![],
+            process_names: vec![],
+            relocation_units: vec![
+                RelocationUnit {
+                    unit_id: "first".to_string(),
+                    display_name: "First".to_string(),
+                    source_path: missing_path.to_string_lossy().to_string(),
+                    target_path_template: "{target_root}/AppData/Demo/First".to_string(),
+                    default_enabled: true,
+                    enabled: true,
+                    risk_level: "stable".to_string(),
+                    requires_confirmation: false,
+                    blocked_reason: None,
+                    allow_bootstrap_if_source_missing: false,
+                    category: "app-data".to_string(),
+                },
+                RelocationUnit {
+                    unit_id: "second".to_string(),
+                    display_name: "Second".to_string(),
+                    source_path: existing_path.to_string_lossy().to_string(),
+                    target_path_template: "{target_root}/AppData/Demo/Second".to_string(),
+                    default_enabled: true,
+                    enabled: true,
+                    risk_level: "stable".to_string(),
+                    requires_confirmation: false,
+                    blocked_reason: None,
+                    allow_bootstrap_if_source_missing: false,
+                    category: "app-data".to_string(),
+                },
+            ],
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let selected = pick_relocation_unit(&profile, None).expect("select default unit");
+        assert_eq!(selected.unit_id, "second");
+    }
+
+    #[test]
+    fn pick_relocation_unit_honors_explicit_unit_id() {
+        let profile = AppProfile {
+            app_id: "demo".to_string(),
+            display_name: "Demo".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
+            bundle_ids: vec![],
+            process_names: vec![],
+            relocation_units: vec![
+                RelocationUnit {
+                    unit_id: "alpha".to_string(),
+                    display_name: "Alpha".to_string(),
+                    source_path: "/tmp/demo-alpha".to_string(),
+                    target_path_template: "{target_root}/AppData/Demo/Alpha".to_string(),
+                    default_enabled: false,
+                    enabled: false,
+                    risk_level: "stable".to_string(),
+                    requires_confirmation: false,
+                    blocked_reason: Some("disabled".to_string()),
+                    allow_bootstrap_if_source_missing: false,
+                    category: "app-data".to_string(),
+                },
+                RelocationUnit {
+                    unit_id: "beta".to_string(),
+                    display_name: "Beta".to_string(),
+                    source_path: "/tmp/demo-beta".to_string(),
+                    target_path_template: "{target_root}/AppData/Demo/Beta".to_string(),
+                    default_enabled: true,
+                    enabled: true,
+                    risk_level: "stable".to_string(),
+                    requires_confirmation: false,
+                    blocked_reason: None,
+                    allow_bootstrap_if_source_missing: false,
+                    category: "app-data".to_string(),
+                },
+            ],
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let selected = pick_relocation_unit(&profile, Some("alpha")).expect("select alpha");
+        assert_eq!(selected.unit_id, "alpha");
+    }
+
+    #[test]
+    fn target_path_for_unit_uses_template_placeholder() {
+        let unit = MigrationUnitPlan {
+            unit_id: "main-data".to_string(),
+            display_name: "Main Data".to_string(),
+            source_path: "~/Library/WeChat".to_string(),
+            target_path_template: "{target_root}/AppData/WeChat".to_string(),
+            default_enabled: true,
+            enabled: true,
+            risk_level: "stable".to_string(),
+            requires_confirmation: false,
+            blocked_reason: None,
+            allow_bootstrap_if_source_missing: false,
+            category: "app-data".to_string(),
+        };
+        let target = target_path_for_unit(&unit, "/Volumes/TestSSD");
         assert_eq!(target, "/Volumes/TestSSD/AppData/WeChat");
     }
 
     #[test]
-    fn target_path_falls_back_to_default_layout_when_template_empty() {
-        let profile = AppProfile {
-            app_id: "custom-app".to_string(),
+    fn target_path_for_unit_falls_back_to_default_layout_when_template_empty() {
+        let unit = MigrationUnitPlan {
+            unit_id: "custom".to_string(),
             display_name: "Custom App".to_string(),
-            tier: "supported".to_string(),
-            bundle_ids: vec![],
-            process_names: vec![],
-            source_paths: vec![],
+            source_path: "/tmp/custom".to_string(),
             target_path_template: String::new(),
-            precheck_rules: PrecheckRules::default(),
+            default_enabled: true,
+            enabled: true,
+            risk_level: "stable".to_string(),
+            requires_confirmation: false,
+            blocked_reason: None,
+            allow_bootstrap_if_source_missing: false,
+            category: "app-data".to_string(),
         };
-        let target = target_path(&profile, "/Volumes/External");
+        let target = target_path_for_unit(&unit, "/Volumes/External");
         assert_eq!(target, "/Volumes/External/AppData/Custom App");
     }
 
@@ -3283,11 +3698,12 @@ mod tests {
         let profile = AppProfile {
             app_id: "wechat-non-mas".to_string(),
             display_name: "WeChat".to_string(),
-            tier: "experimental".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
             bundle_ids: vec!["com.tencent.xinWeChat".to_string()],
             process_names: vec!["WeChat".to_string()],
-            source_paths: vec![],
-            target_path_template: String::new(),
+            relocation_units: vec![],
             precheck_rules: PrecheckRules::default(),
         };
 
@@ -3313,11 +3729,12 @@ mod tests {
         let profile = AppProfile {
             app_id: "telegram-desktop".to_string(),
             display_name: "Telegram Desktop".to_string(),
-            tier: "supported".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
             bundle_ids: vec![],
             process_names: vec!["Telegram".to_string()],
-            source_paths: vec![],
-            target_path_template: String::new(),
+            relocation_units: vec![],
             precheck_rules: PrecheckRules::default(),
         };
 
@@ -3336,11 +3753,12 @@ mod tests {
         let profile = AppProfile {
             app_id: "jetbrains-caches".to_string(),
             display_name: "JetBrains Caches".to_string(),
-            tier: "supported".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
             bundle_ids: vec![],
             process_names: vec!["idea".to_string()],
-            source_paths: vec![],
-            target_path_template: String::new(),
+            relocation_units: vec![],
             precheck_rules: PrecheckRules::default(),
         };
 
@@ -3354,11 +3772,12 @@ mod tests {
         let profile = AppProfile {
             app_id: "wechat-non-mas".to_string(),
             display_name: "WeChat (Non-MAS)".to_string(),
-            tier: "experimental".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
             bundle_ids: vec!["com.tencent.xinWeChat".to_string()],
             process_names: vec!["WeChat".to_string()],
-            source_paths: vec![],
-            target_path_template: String::new(),
+            relocation_units: vec![],
             precheck_rules: PrecheckRules::default(),
         };
 
@@ -3373,11 +3792,12 @@ mod tests {
         let profile = AppProfile {
             app_id: "demo-app".to_string(),
             display_name: "Demo App".to_string(),
-            tier: "supported".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
             bundle_ids: vec![],
             process_names: vec![],
-            source_paths: vec![],
-            target_path_template: String::new(),
+            relocation_units: vec![],
             precheck_rules: PrecheckRules::default(),
         };
 
@@ -3389,6 +3809,30 @@ mod tests {
     fn expand_tilde_keeps_plain_path_unchanged() {
         let input = "/tmp/demo";
         assert_eq!(expand_tilde(input), input);
+    }
+
+    #[test]
+    fn mount_root_from_target_root_normalizes_volume_subpath() {
+        assert_eq!(
+            mount_root_from_target_root("/Volumes/M4_Ext_SSD/DataDock"),
+            Some("/Volumes/M4_Ext_SSD".to_string())
+        );
+        assert_eq!(
+            mount_root_from_target_root("/Volumes/M4_Ext_SSD"),
+            Some("/Volumes/M4_Ext_SSD".to_string())
+        );
+        assert_eq!(mount_root_from_target_root("/Volumes"), None);
+        assert_eq!(mount_root_from_target_root("/Volumes/"), None);
+    }
+
+    #[test]
+    fn mount_root_from_target_root_trims_and_accepts_non_volume_path() {
+        assert_eq!(mount_root_from_target_root("   "), None);
+        assert_eq!(
+            mount_root_from_target_root("/Users/cola/ExternalTarget"),
+            Some("/Users/cola/ExternalTarget".to_string())
+        );
+        assert_eq!(mount_root_from_target_root("/"), Some("/".to_string()));
     }
 
     #[test]

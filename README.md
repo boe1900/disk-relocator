@@ -27,6 +27,33 @@ Disk Relocator 是一个基于 Vue 3 + Tauri + Rust 的 macOS 桌面工具，用
    - `npm run check:rust`
    - `npm run check:release`
 
+## App Profiles 策略
+
+当前版本仅使用内置 `specs/v1/app-profiles.json`，不支持远程自动更新。  
+新增 app 画像的标准流程是：修改内置 profile 并发布新版本。
+
+### 新增 App 画像流程
+
+1. 修改 `specs/v1/app-profiles.json`。
+2. 本地执行质量检查：
+   - `npm run check:frontend`
+   - `npm run check:rust`
+   - `npm run check:release`
+3. 更新版本号（需保持三处一致）：
+   - `package.json`
+   - `src-tauri/Cargo.toml`
+   - `src-tauri/tauri.conf.json`
+4. 提交并发布新版本（见下方发布流程）。
+
+## 发布流程（GitHub Release）
+
+- 触发方式 A（推荐）：推送语义化 tag（`vX.Y.Z`），自动触发 `.github/workflows/release.yml`。
+- 触发方式 B：在 GitHub Actions 手动运行 `Release` 工作流（`workflow_dispatch`）。
+
+发布工作流会自动执行 `npm run check:release`，并上传：
+- `.dmg` 安装包
+- `app-profiles.json`（与该版本二进制绑定）
+
 ## 使用流程（用户视角）
 
 1. 打开应用并点击「刷新扫描」。

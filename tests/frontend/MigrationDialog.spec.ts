@@ -20,7 +20,7 @@ function makeApp(overrides: Partial<AppScanResult> = {}): AppScanResult {
     display_name: "WeChat",
     icon_path: null,
     icon_data_url: null,
-    tier: "supported",
+    availability: "active",
     detected_paths: [
       {
         path: "/Users/test/Library/Containers/com.tencent.xinWeChat",
@@ -58,12 +58,19 @@ const disks: DiskStatus[] = [
 describe("MigrationDialog", () => {
   const invokeMock = vi.mocked(invoke);
   const openMock = vi.mocked(open);
+  const clipboardWriteText = vi.fn();
 
   beforeEach(() => {
     window.localStorage.clear();
     useI18n().setLocale("zh");
     invokeMock.mockReset();
     openMock.mockReset();
+    clipboardWriteText.mockReset();
+    clipboardWriteText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: clipboardWriteText },
+      configurable: true
+    });
     vi.useFakeTimers();
   });
 
@@ -116,7 +123,7 @@ describe("MigrationDialog", () => {
           app_id: "wechat-non-mas",
           target_root: "/Volumes/M4_Ext_SSD",
           mode: "migrate",
-          allow_experimental: false,
+          confirm_high_risk: false,
           cleanup_backup_after_migrate: true
         })
       })
@@ -132,6 +139,89 @@ describe("MigrationDialog", () => {
 
     expect(wrapper.emitted("done")).toHaveLength(1);
     expect(String(wrapper.emitted("done")?.[0]?.[0] ?? "")).toContain("wechat-non-mas");
+  });
+
+  it("supports selecting multiple relocation units and sends unit_id for each request", async () => {
+    invokeMock.mockResolvedValue({
+      relocation_id: "reloc_unit_batch_001",
+      app_id: "wechat-non-mas",
+      state: "HEALTHY",
+      health_state: "healthy",
+      source_path: "/Users/test/source",
+      target_path: "/Volumes/M4_Ext_SSD/RelocatorData/wechat",
+      backup_path: null,
+      trace_id: "tr_units",
+      started_at: "2026-03-06T10:00:00Z",
+      updated_at: "2026-03-06T10:00:02Z"
+    });
+
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp({
+          detected_paths: [
+            {
+              unit_id: "media-and-files",
+              display_name: "Media and Files",
+              default_enabled: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/FileStorage",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 1024
+            },
+            {
+              unit_id: "images",
+              display_name: "Images",
+              default_enabled: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/Image",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 2048
+            }
+          ]
+        }),
+        disks
+      }
+    });
+
+    await flushPromises();
+
+    const unitCheckboxes = wrapper.findAll('[data-test="unit-checkbox"]');
+    expect(unitCheckboxes).toHaveLength(2);
+    expect((unitCheckboxes[0].element as HTMLInputElement).checked).toBe(true);
+    expect((unitCheckboxes[1].element as HTMLInputElement).checked).toBe(true);
+
+    const startBtn = wrapper
+      .findAll("button")
+      .find((btn) => btn.text().includes("开始迁移"));
+    expect(startBtn).toBeDefined();
+    await startBtn!.trigger("click");
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "migrate_app",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          app_id: "wechat-non-mas",
+          unit_id: "media-and-files",
+          mode: "migrate"
+        })
+      })
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      2,
+      "migrate_app",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          app_id: "wechat-non-mas",
+          unit_id: "images",
+          mode: "migrate"
+        })
+      })
+    );
   });
 
   it("uses bootstrap mode when source is missing and rejects out-of-disk picker path", async () => {
@@ -154,7 +244,18 @@ describe("MigrationDialog", () => {
         showModal: true,
         selectedAppId: "wechat-non-mas",
         selectedApp: makeApp({
-          detected_paths: [],
+          detected_paths: [
+            {
+              unit_id: "media-and-files",
+              display_name: "Media and Files",
+              default_enabled: true,
+              allow_bootstrap_if_source_missing: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/FileStorage",
+              exists: false,
+              is_symlink: false,
+              size_bytes: 0
+            }
+          ],
           allow_bootstrap_if_source_missing: true
         }),
         disks
@@ -190,7 +291,7 @@ describe("MigrationDialog", () => {
     );
   });
 
-  it("requires explicit confirmation for experimental profile", async () => {
+  it("requires explicit confirmation for high-risk unit", async () => {
     invokeMock.mockResolvedValue({
       relocation_id: "reloc_wechat_003",
       app_id: "wechat-non-mas",
@@ -209,7 +310,18 @@ describe("MigrationDialog", () => {
         showModal: true,
         selectedAppId: "wechat-non-mas",
         selectedApp: makeApp({
-          tier: "experimental"
+          detected_paths: [
+            {
+              unit_id: "media-and-files",
+              display_name: "Media and Files",
+              default_enabled: true,
+              requires_confirmation: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 1024
+            }
+          ]
         }),
         disks
       }
@@ -223,9 +335,9 @@ describe("MigrationDialog", () => {
     expect(startBtn).toBeDefined();
     expect(startBtn!.attributes("disabled")).toBeDefined();
 
-    const checkboxes = wrapper.findAll('input[type="checkbox"]');
-    expect(checkboxes.length).toBeGreaterThan(0);
-    await checkboxes[0].setValue(true);
+    const confirmationCheckbox = wrapper.find('[data-test="confirm-high-risk-checkbox"]');
+    expect(confirmationCheckbox.exists()).toBe(true);
+    await confirmationCheckbox.setValue(true);
     await flushPromises();
 
     expect(startBtn!.attributes("disabled")).toBeUndefined();
@@ -236,7 +348,7 @@ describe("MigrationDialog", () => {
       "migrate_app",
       expect.objectContaining({
         req: expect.objectContaining({
-          allow_experimental: true
+          confirm_high_risk: true
         })
       })
     );
@@ -278,7 +390,7 @@ describe("MigrationDialog", () => {
         selectedApp: makeApp({
           app_id: "mas-sandbox-containers",
           display_name: "MAS Sandbox Containers",
-          tier: "blocked"
+          availability: "blocked"
         }),
         disks
       }
@@ -366,6 +478,38 @@ describe("MigrationDialog", () => {
     expect(wrapper.text()).toContain("迁移失败");
     expect(wrapper.text()).toContain("disk offline");
     expect(wrapper.emitted("done")).toBeUndefined();
+  });
+
+  it("shows friendly target-path-exists message with path and trace id", async () => {
+    invokeMock.mockRejectedValue({
+      code: "PRECHECK_TARGET_PATH_EXISTS",
+      message: "target path already exists.",
+      trace_id: "tr_target_exists_1",
+      details: {
+        target_path: "/Volumes/M4_Ext_SSD/DataDock/AppData/WeChat/xwechat_files"
+      }
+    });
+
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp(),
+        disks
+      }
+    });
+    await flushPromises();
+
+    const startBtn = wrapper
+      .findAll("button")
+      .find((btn) => btn.text().includes("开始迁移"));
+    expect(startBtn).toBeDefined();
+    await startBtn!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("目标目录已存在");
+    expect(wrapper.text()).toContain("/Volumes/M4_Ext_SSD/DataDock/AppData/WeChat/xwechat_files");
+    expect(wrapper.text()).toContain("trace_id=tr_target_exists_1");
   });
 
   it("renders command error object instead of [object Object]", async () => {
@@ -592,6 +736,111 @@ describe("MigrationDialog", () => {
     expect(wrapper.text()).toContain("dialog unavailable");
   });
 
+  it("copies full source path to clipboard and shows copied feedback", async () => {
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp(),
+        disks
+      }
+    });
+    await flushPromises();
+
+    const copyBtn = wrapper.find('[data-test="copy-path-btn"]');
+    expect(copyBtn.exists()).toBe(true);
+    expect(copyBtn.text()).toBe("复制路径");
+
+    await copyBtn.trigger("click");
+    await flushPromises();
+
+    expect(clipboardWriteText).toHaveBeenCalledWith(
+      "/Users/test/Library/Containers/com.tencent.xinWeChat"
+    );
+    expect(copyBtn.text()).toBe("已复制");
+
+    vi.advanceTimersByTime(1300);
+    await flushPromises();
+    expect(copyBtn.text()).toBe("复制路径");
+  });
+
+  it("opens source path in Finder from unit row", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp(),
+        disks
+      }
+    });
+    await flushPromises();
+
+    const openBtn = wrapper.find('[data-test="open-path-btn"]');
+    expect(openBtn.exists()).toBe(true);
+    expect(openBtn.text()).toBe("在 Finder 打开");
+
+    await openBtn.trigger("click");
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith("open_in_finder", {
+      path: "/Users/test/Library/Containers/com.tencent.xinWeChat"
+    });
+  });
+
+  it("keeps unit selection unchanged when clicking copy/open path actions", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp({
+          detected_paths: [
+            {
+              unit_id: "media-and-files",
+              display_name: "Media and Files",
+              default_enabled: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/FileStorage",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 1024
+            },
+            {
+              unit_id: "images",
+              display_name: "Images",
+              default_enabled: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/Image",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 2048
+            }
+          ]
+        }),
+        disks
+      }
+    });
+    await flushPromises();
+
+    const checkboxes = wrapper.findAll('[data-test="unit-checkbox"]');
+    expect(checkboxes).toHaveLength(2);
+    expect((checkboxes[0].element as HTMLInputElement).checked).toBe(true);
+    expect((checkboxes[1].element as HTMLInputElement).checked).toBe(true);
+
+    const copyBtn = wrapper.findAll('[data-test="copy-path-btn"]')[0];
+    await copyBtn.trigger("click");
+    await flushPromises();
+
+    const openBtn = wrapper.findAll('[data-test="open-path-btn"]')[0];
+    await openBtn.trigger("click");
+    await flushPromises();
+
+    const latestCheckboxes = wrapper.findAll('[data-test="unit-checkbox"]');
+    expect((latestCheckboxes[0].element as HTMLInputElement).checked).toBe(true);
+    expect((latestCheckboxes[1].element as HTMLInputElement).checked).toBe(true);
+  });
+
   it("passes cleanup_backup_after_migrate=false when user disables cleanup", async () => {
     invokeMock.mockResolvedValue({
       relocation_id: "reloc_wechat_cleanup_false",
@@ -616,7 +865,8 @@ describe("MigrationDialog", () => {
     });
     await flushPromises();
 
-    const cleanupCheckbox = wrapper.findAll('input[type="checkbox"]')[0];
+    const cleanupCheckbox = wrapper.find('[data-test="cleanup-checkbox"]');
+    expect(cleanupCheckbox.exists()).toBe(true);
     await cleanupCheckbox.setValue(false);
     await flushPromises();
 

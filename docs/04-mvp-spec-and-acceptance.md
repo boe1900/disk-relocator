@@ -1,6 +1,6 @@
 # MVP 规格与验收标准
 
-## 1. V1 范围
+## 1. 当前范围
 
 包含：
 1. 扫描预定义应用画像
@@ -43,10 +43,10 @@ fn scan_apps() -> Result<Vec<AppScanResult>, String>;
 fn get_disk_status() -> Result<Vec<DiskStatus>, String>;
 
 #[tauri::command]
-fn migrate_app(app_id: String, target_root: String) -> Result<RelocationResult, String>;
+fn migrate_app(req: MigrateRequest) -> Result<RelocationResult, String>;
 
 #[tauri::command]
-fn rollback_relocation(relocation_id: String) -> Result<RelocationResult, String>;
+fn rollback_relocation(req: RollbackRequest) -> Result<RelocationResult, String>;
 
 #[tauri::command]
 fn list_relocations() -> Result<Vec<RelocationRecord>, String>;
@@ -75,9 +75,9 @@ fn check_health() -> Result<Vec<HealthStatus>, String>;
 3. 异常退出后元数据可恢复
 4. 文件操作具备幂等或防重保护
 
-## 6. V1 验收门槛
+## 6. 验收门槛
 
-1. 对每个 `Supported` 应用画像：
+1. 对每个 `availability=active` 应用画像：
   - 至少 20 轮“迁移 + 回滚”成功，且无数据损坏
 2. 强制中断测试：
   - 在迁移每一步中断后都能恢复到一致状态

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { computed, onMounted, ref } from "vue";
 import {
   Activity,
@@ -31,7 +32,10 @@ interface AppCard {
   targetDisk: string | null;
   path: string;
   desc: string;
-  tier: AppScanResult["tier"];
+  availability: AppScanResult["availability"];
+  blockedReason: string | null;
+  requiresConfirmation: boolean;
+  hasExecutableUnit: boolean;
   running: boolean;
 }
 
@@ -55,15 +59,6 @@ const iconMap: Record<string, string> = {
   "xcode-derived-data": "🛠️",
   "mas-sandbox-containers": "🧩",
   "docker-desktop-data-root": "🐳"
-};
-
-const descriptionKeyMap: Record<string, string> = {
-  "wechat-non-mas": "app.appDescriptions.wechat-non-mas",
-  "telegram-desktop": "app.appDescriptions.telegram-desktop",
-  "jetbrains-caches": "app.appDescriptions.jetbrains-caches",
-  "xcode-derived-data": "app.appDescriptions.xcode-derived-data",
-  "mas-sandbox-containers": "app.appDescriptions.mas-sandbox-containers",
-  "docker-desktop-data-root": "app.appDescriptions.docker-desktop-data-root"
 };
 
 function formatBytes(bytes: number): string {
@@ -91,6 +86,19 @@ function parseDiskName(targetPath: string | undefined): string | null {
   return decodeURIComponent(match[1]);
 }
 
+function isExecutablePath(path: AppScanResult["detected_paths"][number]): boolean {
+  const blocked = path.blocked_reason?.trim();
+  return path.enabled !== false && !blocked;
+}
+
+function pathRequiresConfirmation(path: AppScanResult["detected_paths"][number]): boolean {
+  if (path.requires_confirmation === true) {
+    return true;
+  }
+  const risk = (path.risk_level ?? "stable").toString().toLowerCase();
+  return risk !== "stable";
+}
+
 const appCards = computed<AppCard[]>(() => {
   const latestRelocation = new Map<string, RelocationSummary>();
   for (const row of relocations.value) {
@@ -102,11 +110,25 @@ const appCards = computed<AppCard[]>(() => {
   const cards: AppCard[] = [];
 
   for (const app of apps.value) {
-    const existingPaths = app.detected_paths.filter((path) => path.exists);
-    const hasSymlink = existingPaths.some((path) => path.is_symlink);
+    const executablePaths = app.detected_paths.filter((path) => isExecutablePath(path));
+    const hasExecutableUnit = executablePaths.length > 0;
+    const consideredPaths = hasExecutableUnit ? executablePaths : app.detected_paths;
+    const existingPaths = consideredPaths.filter((path) => path.exists);
     const sizeBytes = existingPaths
       .filter((path) => !path.is_symlink)
       .reduce((sum, path) => sum + path.size_bytes, 0);
+    const isMigrated = hasExecutableUnit
+      ? executablePaths.every((path) => path.exists && path.is_symlink)
+      : existingPaths.some((path) => path.is_symlink);
+    const requiresConfirmation = hasExecutableUnit
+      ? executablePaths.some((path) => pathRequiresConfirmation(path))
+      : false;
+    const blockedReason = app.blocked_reason?.trim() || null;
+    const activeLocale = locale.value.toLowerCase();
+    const localeBase = activeLocale.split("-")[0];
+    const localizedDescription =
+      app.description_i18n?.[activeLocale] ?? app.description_i18n?.[localeBase] ?? null;
+    const description = localizedDescription?.trim() || null;
     const relocation = latestRelocation.get(app.app_id);
 
     cards.push({
@@ -115,13 +137,14 @@ const appCards = computed<AppCard[]>(() => {
       icon: iconMap[app.app_id] ?? "📦",
       iconPath: app.icon_data_url ?? (app.icon_path ? convertFileSrc(app.icon_path) : null),
       size: formatBytes(sizeBytes),
-      isMigrated: hasSymlink,
+      isMigrated,
       targetDisk: parseDiskName(relocation?.target_path),
-      path: existingPaths[0]?.path ?? app.detected_paths[0]?.path ?? t("app.pathFallback"),
-      desc: descriptionKeyMap[app.app_id]
-        ? t(descriptionKeyMap[app.app_id])
-        : t("app.descFallback"),
-      tier: app.tier,
+      path: consideredPaths[0]?.path ?? app.detected_paths[0]?.path ?? t("app.pathFallback"),
+      desc: description ?? t("app.descFallback"),
+      availability: app.availability,
+      blockedReason,
+      requiresConfirmation,
+      hasExecutableUnit,
       running: app.running
     });
   }
@@ -181,13 +204,26 @@ function handleMigrateClick(appId: string): void {
   info.value = null;
 }
 
+async function confirmRestore(name: string): Promise<boolean> {
+  const message = t("app.messages.restoreConfirm", { name });
+  try {
+    return await dialogConfirm(message, {
+      kind: "warning",
+      okLabel: t("common.confirm"),
+      cancelLabel: t("common.cancelled")
+    });
+  } catch {
+    return window.confirm(message);
+  }
+}
+
 async function handleRestore(appId: string): Promise<void> {
   const targetCard = appCards.value.find((item) => item.id === appId);
   if (!targetCard) {
     return;
   }
 
-  if (!confirm(t("app.messages.restoreConfirm", { name: targetCard.name }))) {
+  if (!(await confirmRestore(targetCard.name))) {
     return;
   }
 

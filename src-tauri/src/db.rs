@@ -14,7 +14,6 @@ pub struct Database {
 pub struct RelocationRecord {
     pub relocation_id: String,
     pub app_id: String,
-    pub tier: String,
     pub mode: String,
     pub source_path: String,
     pub target_root: String,
@@ -32,7 +31,6 @@ pub struct RelocationRecord {
 pub struct NewRelocationRecord {
     pub relocation_id: String,
     pub app_id: String,
-    pub tier: String,
     pub mode: String,
     pub source_path: String,
     pub target_root: String,
@@ -130,38 +128,72 @@ impl Database {
 
     pub fn insert_relocation(&self, row: &NewRelocationRecord) -> rusqlite::Result<()> {
         let connection = self.connect()?;
-        connection.execute(
-            r#"
-            INSERT INTO relocations (
-              relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
-              state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
-              metadata_version, created_at, updated_at, completed_at
-            ) VALUES (
-              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-              ?9, ?10, ?11, ?12, ?13, ?14,
-              1, ?15, ?16, ?17
-            )
-            "#,
-            params![
-                row.relocation_id,
-                row.app_id,
-                row.tier,
-                row.mode,
-                row.source_path,
-                row.target_root,
-                row.target_path,
-                row.backup_path,
-                row.state,
-                row.health_state,
-                row.last_error_code,
-                row.trace_id,
-                row.source_size_bytes,
-                row.target_size_bytes,
-                row.created_at,
-                row.updated_at,
-                row.completed_at,
-            ],
-        )?;
+        if relocations_has_legacy_tier_column(&connection)? {
+            connection.execute(
+                r#"
+                INSERT INTO relocations (
+                  relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
+                  state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
+                  metadata_version, created_at, updated_at, completed_at
+                ) VALUES (
+                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                  ?9, ?10, ?11, ?12, ?13, ?14,
+                  1, ?15, ?16, ?17
+                )
+                "#,
+                params![
+                    row.relocation_id,
+                    row.app_id,
+                    "supported",
+                    row.mode,
+                    row.source_path,
+                    row.target_root,
+                    row.target_path,
+                    row.backup_path,
+                    row.state,
+                    row.health_state,
+                    row.last_error_code,
+                    row.trace_id,
+                    row.source_size_bytes,
+                    row.target_size_bytes,
+                    row.created_at,
+                    row.updated_at,
+                    row.completed_at,
+                ],
+            )?;
+        } else {
+            connection.execute(
+                r#"
+                INSERT INTO relocations (
+                  relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
+                  state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
+                  metadata_version, created_at, updated_at, completed_at
+                ) VALUES (
+                  ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                  ?8, ?9, ?10, ?11, ?12, ?13,
+                  1, ?14, ?15, ?16
+                )
+                "#,
+                params![
+                    row.relocation_id,
+                    row.app_id,
+                    row.mode,
+                    row.source_path,
+                    row.target_root,
+                    row.target_path,
+                    row.backup_path,
+                    row.state,
+                    row.health_state,
+                    row.last_error_code,
+                    row.trace_id,
+                    row.source_size_bytes,
+                    row.target_size_bytes,
+                    row.created_at,
+                    row.updated_at,
+                    row.completed_at,
+                ],
+            )?;
+        }
 
         Ok(())
     }
@@ -233,7 +265,7 @@ impl Database {
         let connection = self.connect()?;
         let mut stmt = connection.prepare(
             r#"
-            SELECT relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
+            SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
                    state, health_state, last_error_code, trace_id, created_at, updated_at
             FROM relocations
             WHERE relocation_id = ?1
@@ -249,7 +281,7 @@ impl Database {
         let connection = self.connect()?;
         let mut stmt = connection.prepare(
             r#"
-            SELECT relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
+            SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
                    state, health_state, last_error_code, trace_id, created_at, updated_at
             FROM relocations
             ORDER BY datetime(updated_at) DESC, rowid DESC
@@ -268,7 +300,7 @@ impl Database {
         let connection = self.connect()?;
         let mut stmt = connection.prepare(
             r#"
-            SELECT relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
+            SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
                    state, health_state, last_error_code, trace_id, created_at, updated_at
             FROM relocations
             WHERE state IN (
@@ -359,7 +391,7 @@ impl Database {
         let mut stmt = connection.prepare(
             r#"
             WITH ranked AS (
-              SELECT relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
+              SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
                      state, health_state, last_error_code, trace_id, created_at, updated_at,
                      ROW_NUMBER() OVER (
                        PARTITION BY app_id
@@ -368,7 +400,7 @@ impl Database {
               FROM relocations
               WHERE state IN ('HEALTHY', 'DEGRADED', 'BROKEN')
             )
-            SELECT relocation_id, app_id, tier, mode, source_path, target_root, target_path, backup_path,
+            SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
                    state, health_state, last_error_code, trace_id, created_at, updated_at
             FROM ranked
             WHERE rank_latest = 1
@@ -532,22 +564,33 @@ impl Database {
     }
 }
 
+fn relocations_has_legacy_tier_column(connection: &Connection) -> rusqlite::Result<bool> {
+    let mut stmt = connection.prepare("PRAGMA table_info(relocations)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+
+    for row in rows {
+        if row? == "tier" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn row_to_relocation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RelocationRecord> {
     Ok(RelocationRecord {
         relocation_id: row.get(0)?,
         app_id: row.get(1)?,
-        tier: row.get(2)?,
-        mode: row.get(3)?,
-        source_path: row.get(4)?,
-        target_root: row.get(5)?,
-        target_path: row.get(6)?,
-        backup_path: row.get(7)?,
-        state: row.get(8)?,
-        health_state: row.get(9)?,
-        last_error_code: row.get(10)?,
-        trace_id: row.get(11)?,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
+        mode: row.get(2)?,
+        source_path: row.get(3)?,
+        target_root: row.get(4)?,
+        target_path: row.get(5)?,
+        backup_path: row.get(6)?,
+        state: row.get(7)?,
+        health_state: row.get(8)?,
+        last_error_code: row.get(9)?,
+        trace_id: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
@@ -581,7 +624,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_test_001".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/Library/Application Support/Telegram Desktop".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -726,7 +768,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_log_001".to_string(),
             app_id: "wechat-non-mas".to_string(),
-            tier: "experimental".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/Library/Containers/com.tencent.xinWeChat".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -815,7 +856,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_active_old".to_string(),
             app_id: "wechat-non-mas".to_string(),
-            tier: "experimental".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-old".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -836,7 +876,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_inactive".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-inactive".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -857,7 +896,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_active_new".to_string(),
             app_id: "xcode-derived-data".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-new".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -878,7 +916,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_active_wechat_latest".to_string(),
             app_id: "wechat-non-mas".to_string(),
-            tier: "experimental".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-latest".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -913,7 +950,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_snap_001".to_string(),
             app_id: "wechat-non-mas".to_string(),
-            tier: "experimental".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-1".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -934,7 +970,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_snap_002".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-2".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -1008,7 +1043,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_unfinished_old".to_string(),
             app_id: "wechat-non-mas".to_string(),
-            tier: "experimental".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-old".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -1029,7 +1063,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_finished".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-finished".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -1050,7 +1083,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_unfinished_new".to_string(),
             app_id: "xcode-derived-data".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source-new".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -1085,7 +1117,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_limit".to_string(),
             app_id: "wechat-non-mas".to_string(),
-            tier: "experimental".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -1146,7 +1177,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_trace_only".to_string(),
             app_id: "wechat-non-mas".to_string(),
-            tier: "experimental".to_string(),
             mode: "migrate".to_string(),
             source_path: "/Users/test/source".to_string(),
             target_root: "/Volumes/TestSSD".to_string(),
@@ -1213,5 +1243,73 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].log_id, "log_trace_1");
         assert_eq!(rows[1].log_id, "log_trace_3");
+    }
+
+    #[test]
+    fn insert_relocation_supports_legacy_tier_not_null_schema() {
+        let dir = tempdir().expect("create temp dir");
+        let db_path = dir.path().join("disk-relocator.sqlite3");
+        let connection = Connection::open(&db_path).expect("open legacy sqlite");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE relocations (
+                  relocation_id TEXT PRIMARY KEY,
+                  app_id TEXT NOT NULL,
+                  tier TEXT NOT NULL CHECK (tier IN ('supported', 'experimental', 'blocked')),
+                  mode TEXT NOT NULL,
+                  source_path TEXT NOT NULL,
+                  target_root TEXT NOT NULL,
+                  target_path TEXT NOT NULL,
+                  backup_path TEXT,
+                  state TEXT NOT NULL,
+                  health_state TEXT NOT NULL,
+                  last_error_code TEXT,
+                  trace_id TEXT NOT NULL,
+                  source_size_bytes INTEGER NOT NULL DEFAULT 0,
+                  target_size_bytes INTEGER NOT NULL DEFAULT 0,
+                  metadata_version INTEGER NOT NULL DEFAULT 1,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  completed_at TEXT
+                );
+                "#,
+            )
+            .expect("create legacy relocations table");
+        drop(connection);
+
+        let db = Database {
+            path: db_path.clone(),
+        };
+        let now = "2026-03-10T00:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_legacy_001".to_string(),
+            app_id: "wechat-non-mas".to_string(),
+            mode: "migrate".to_string(),
+            source_path: "/Users/test/source".to_string(),
+            target_root: "/Volumes/M4_Ext_SSD".to_string(),
+            target_path: "/Volumes/M4_Ext_SSD/AppData/WeChat/xwechat_files".to_string(),
+            backup_path: None,
+            state: "HEALTHY".to_string(),
+            health_state: "healthy".to_string(),
+            last_error_code: None,
+            trace_id: "tr_legacy_001".to_string(),
+            source_size_bytes: 1,
+            target_size_bytes: 1,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now.clone()),
+        })
+        .expect("insert relocation should support legacy tier column");
+
+        let connection = Connection::open(db_path).expect("re-open sqlite");
+        let tier: String = connection
+            .query_row(
+                "SELECT tier FROM relocations WHERE relocation_id = ?1",
+                params!["reloc_legacy_001"],
+                |row| row.get(0),
+            )
+            .expect("read tier");
+        assert_eq!(tier, "supported");
     }
 }

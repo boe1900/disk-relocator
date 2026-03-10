@@ -1,4 +1,4 @@
-# Migration State Machine v1
+# Migration State Machine
 
 本文件冻结迁移状态流转，作为后续实现和测试的单一依据。
 
@@ -48,7 +48,7 @@ stateDiagram-v2
 
 | 状态 | 说明 |
 |---|---|
-| `PRECHECKING` | 执行运行态/权限/磁盘/空间/分级检查 |
+| `PRECHECKING` | 执行运行态/权限/磁盘/空间与 `availability/unit` 检查 |
 | `PRECHECK_FAILED` | 预检不通过，未进入文件变更 |
 | `BOOTSTRAP_INIT` | 首次引导模式初始化目标目录 |
 | `COPYING` | 复制源数据到目标临时目录 |
@@ -75,4 +75,3 @@ stateDiagram-v2
 1. `ROLLING_BACK` 可重复执行，多次执行结果一致。
 2. `PRECHECKING` 不修改文件系统，可重复触发。
 3. `MIGRATE_CLEANUP_FAILED` 不影响最终稳定态，可异步重试清理。
-

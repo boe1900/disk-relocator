@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -31,9 +32,11 @@ impl CommandError {
 #[derive(Debug, Deserialize)]
 pub struct MigrateRequest {
     pub app_id: String,
+    #[serde(default)]
+    pub unit_id: Option<String>,
     pub target_root: String,
     pub mode: String,
-    pub allow_experimental: bool,
+    pub confirm_high_risk: bool,
     #[serde(default)]
     pub cleanup_backup_after_migrate: bool,
 }
@@ -64,6 +67,24 @@ pub struct ReconcileRequest {
 
 #[derive(Debug, Serialize)]
 pub struct AppScanPath {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_confirmation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_bootstrap_if_source_missing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     pub path: String,
     pub exists: bool,
     pub is_symlink: bool,
@@ -74,11 +95,15 @@ pub struct AppScanPath {
 pub struct AppScanResult {
     pub app_id: String,
     pub display_name: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub description_i18n: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_data_url: Option<String>,
-    pub tier: String,
+    pub availability: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
     pub detected_paths: Vec<AppScanPath>,
     pub running: bool,
     pub allow_bootstrap_if_source_missing: bool,

@@ -371,7 +371,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_recover_healthy".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: dir.path().to_string_lossy().to_string(),
@@ -419,7 +418,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_recover_rollback".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: dir.path().to_string_lossy().to_string(),
@@ -464,7 +462,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_recover_stable".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: dir.path().to_string_lossy().to_string(),
@@ -503,7 +500,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_recover_failed".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: dir.path().to_string_lossy().to_string(),
@@ -558,7 +554,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_recover_bootstrap_healthy".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "bootstrap".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: dir.path().to_string_lossy().to_string(),
@@ -608,7 +603,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_recover_bootstrap_rollback".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "bootstrap".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: dir.path().to_string_lossy().to_string(),
@@ -653,7 +647,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_recover_missing_source".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: dir.path().to_string_lossy().to_string(),

@@ -1,6 +1,6 @@
-# Error Codes v1
+# Error Codes
 
-本文件冻结 V1 阶段可见错误码，约束前后端和日志字段，避免后续语义漂移。
+本文件冻结当前可见错误码，约束前后端和日志字段，避免后续语义漂移。
 
 ## 字段约定
 
@@ -20,8 +20,9 @@
 | `PRECHECK_INSUFFICIENT_SPACE` | 目标空间不足（含安全余量） | 是 | 清理空间或更换磁盘 |
 | `PRECHECK_SOURCE_NOT_FOUND` | 迁移模式下源路径不存在 | 否 | 切换到首次引导模式或检查路径 |
 | `PRECHECK_SOURCE_IS_SYMLINK` | 源路径已是软链接 | 否 | 执行对账/修复流程 |
-| `PRECHECK_TIER_BLOCKED` | 当前画像分级为 Blocked | 否 | 不允许迁移 |
-| `PRECHECK_EXPERIMENTAL_NOT_CONFIRMED` | Experimental 画像未完成二次确认 | 是 | 完成风险确认后重试 |
+| `PRECHECK_APP_BLOCKED` | 当前画像 `availability` 为 `blocked/deprecated` | 否 | 不允许迁移 |
+| `PRECHECK_UNIT_BLOCKED` | 选中的迁移单元被禁用或被阻断 | 否 | 调整单元选择或配置 |
+| `PRECHECK_UNIT_CONFIRMATION_REQUIRED` | 选中单元要求确认但用户未确认 | 是 | 完成风险确认后重试 |
 
 ## 迁移（migration）
 

@@ -1,7 +1,12 @@
-import { mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import AppListView from "../../src/components/AppListView.vue";
 import { useI18n } from "../../src/i18n";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn()
+}));
 
 interface AppCard {
   id: string;
@@ -13,14 +18,27 @@ interface AppCard {
   targetDisk: string | null;
   path: string;
   desc: string;
-  tier: "supported" | "experimental" | "blocked";
+  availability: "active" | "blocked" | "deprecated";
+  blockedReason?: string | null;
+  requiresConfirmation?: boolean;
+  hasExecutableUnit?: boolean;
   running: boolean;
 }
 
 describe("AppListView", () => {
+  const invokeMock = vi.mocked(invoke);
+  const clipboardWriteText = vi.fn();
+
   beforeEach(() => {
     window.localStorage.clear();
     useI18n().setLocale("zh");
+    invokeMock.mockReset();
+    clipboardWriteText.mockReset();
+    clipboardWriteText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: clipboardWriteText },
+      configurable: true
+    });
   });
 
   it("emits refresh/migrate/restore and disables blocked/running migration", async () => {
@@ -35,7 +53,7 @@ describe("AppListView", () => {
         targetDisk: null,
         path: "~/Library/Containers/com.tencent.xinWeChat",
         desc: "desc",
-        tier: "supported",
+        availability: "active",
         running: false
       },
       {
@@ -48,7 +66,7 @@ describe("AppListView", () => {
         targetDisk: null,
         path: "~/blocked",
         desc: "desc",
-        tier: "blocked",
+        availability: "blocked",
         running: false
       },
       {
@@ -61,7 +79,7 @@ describe("AppListView", () => {
         targetDisk: null,
         path: "~/running",
         desc: "desc",
-        tier: "supported",
+        availability: "active",
         running: true
       },
       {
@@ -74,7 +92,7 @@ describe("AppListView", () => {
         targetDisk: "M4_Ext_SSD",
         path: "~/Library/Group Containers",
         desc: "desc",
-        tier: "supported",
+        availability: "active",
         running: false
       }
     ];
@@ -125,7 +143,7 @@ describe("AppListView", () => {
         targetDisk: null,
         path: "~/Library/Containers/com.tencent.xinWeChat",
         desc: "desc",
-        tier: "supported",
+        availability: "active",
         running: false
       }
     ];
@@ -169,7 +187,7 @@ describe("AppListView", () => {
             targetDisk: null,
             path: "~/blocked",
             desc: "desc",
-            tier: "blocked",
+            availability: "blocked",
             running: false
           },
           {
@@ -182,7 +200,7 @@ describe("AppListView", () => {
             targetDisk: null,
             path: "~/running",
             desc: "desc",
-            tier: "supported",
+            availability: "active",
             running: true
           }
         ],
@@ -225,7 +243,7 @@ describe("AppListView", () => {
             targetDisk: null,
             path: "~/migrated",
             desc: "desc",
-            tier: "supported",
+            availability: "active",
             running: false
           }
         ],
@@ -238,21 +256,22 @@ describe("AppListView", () => {
     expect(wrapper.text()).not.toContain("已外存至");
   });
 
-  it("shows experimental badge and hint for experimental app", () => {
+  it("shows confirmation badge and hint for risky app", () => {
     const wrapper = mount(AppListView, {
       props: {
         apps: [
           {
-            id: "exp-app",
-            name: "Experimental App",
+            id: "risk-app",
+            name: "Risky App",
             icon: "🧪",
             iconPath: null,
             size: "1 GB",
             isMigrated: false,
             targetDisk: null,
-            path: "~/exp",
+            path: "~/risk",
             desc: "desc",
-            tier: "experimental",
+            availability: "active",
+            requiresConfirmation: true,
             running: false
           }
         ],
@@ -261,8 +280,55 @@ describe("AppListView", () => {
       }
     });
 
-    expect(wrapper.text()).toContain("实验支持");
-    expect(wrapper.text()).toContain("实验支持，迁移前需确认风险");
+    expect(wrapper.text()).toContain("需确认");
+    expect(wrapper.text()).toContain("包含需确认的数据单元，迁移前请确认风险");
+  });
+
+  it("disables migration for deprecated app and app without executable units", () => {
+    const wrapper = mount(AppListView, {
+      props: {
+        apps: [
+          {
+            id: "deprecated-app",
+            name: "Deprecated App",
+            icon: "📦",
+            iconPath: null,
+            size: "1 GB",
+            isMigrated: false,
+            targetDisk: null,
+            path: "~/deprecated",
+            desc: "desc",
+            availability: "deprecated",
+            running: false
+          },
+          {
+            id: "no-unit-app",
+            name: "No Unit App",
+            icon: "📦",
+            iconPath: null,
+            size: "1 GB",
+            isMigrated: false,
+            targetDisk: null,
+            path: "~/no-unit",
+            desc: "desc",
+            availability: "active",
+            hasExecutableUnit: false,
+            running: false
+          }
+        ],
+        loading: false,
+        error: null
+      }
+    });
+
+    const migrateButtons = wrapper
+      .findAll("button")
+      .filter((btn) => btn.text().includes("搬迁外存"));
+    expect(migrateButtons).toHaveLength(2);
+    expect(migrateButtons[0].attributes("disabled")).toBeDefined();
+    expect(migrateButtons[1].attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("当前画像已弃用，默认不支持新迁移");
+    expect(wrapper.text()).toContain("当前没有可迁移的数据单元");
   });
 
   it("renders upstream error message when refresh fails", () => {
@@ -275,5 +341,48 @@ describe("AppListView", () => {
     });
 
     expect(wrapper.text()).toContain("数据加载失败：scan failed");
+  });
+
+  it("supports copy path and open in Finder actions for absolute app path", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    const wrapper = mount(AppListView, {
+      props: {
+        apps: [
+          {
+            id: "wechat",
+            name: "WeChat",
+            icon: "💬",
+            iconPath: null,
+            size: "10 GB",
+            isMigrated: false,
+            targetDisk: null,
+            path: "/Users/test/Library/Containers/com.tencent.xinWeChat",
+            desc: "desc",
+            availability: "active",
+            running: false
+          }
+        ],
+        loading: false,
+        error: null
+      }
+    });
+
+    const openBtn = wrapper.find('[data-test="app-open-path-btn"]');
+    expect(openBtn.exists()).toBe(true);
+    await openBtn.trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("open_in_finder", {
+      path: "/Users/test/Library/Containers/com.tencent.xinWeChat"
+    });
+
+    const copyBtn = wrapper.find('[data-test="app-copy-path-btn"]');
+    expect(copyBtn.exists()).toBe(true);
+    await copyBtn.trigger("click");
+    await flushPromises();
+    expect(clipboardWriteText).toHaveBeenCalledWith(
+      "/Users/test/Library/Containers/com.tencent.xinWeChat"
+    );
+    expect(copyBtn.text()).toBe("已复制");
   });
 });

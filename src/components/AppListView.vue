@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { reactive } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { onBeforeUnmount, reactive, ref } from "vue";
 import { useI18n } from "../i18n";
+import { formatCommandError } from "../utils/error";
 
 interface AppCard {
   id: string;
@@ -12,7 +14,10 @@ interface AppCard {
   targetDisk: string | null;
   path: string;
   desc: string;
-  tier: "supported" | "experimental" | "blocked";
+  availability: "active" | "blocked" | "deprecated";
+  blockedReason?: string | null;
+  requiresConfirmation?: boolean;
+  hasExecutableUnit?: boolean;
   running: boolean;
 }
 
@@ -30,16 +35,29 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const iconLoadFailed = reactive<Record<string, boolean>>({});
+const pathActionError = ref<string | null>(null);
+const copiedPathAppId = ref<string | null>(null);
+
+let copyFeedbackTimer: number | null = null;
 
 function migrationHint(app: AppCard): string {
-  if (app.tier === "blocked") {
-    return t("appList.hint.blocked");
+  if (app.availability === "blocked") {
+    const reason = app.blockedReason?.trim();
+    return reason
+      ? t("appList.hint.blockedWithReason", { reason })
+      : t("appList.hint.blocked");
+  }
+  if (app.availability === "deprecated") {
+    return t("appList.hint.deprecated");
+  }
+  if (app.hasExecutableUnit === false) {
+    return t("appList.hint.noExecutableUnit");
   }
   if (app.running) {
     return t("appList.hint.running");
   }
-  if (app.tier === "experimental") {
-    return t("appList.hint.experimental");
+  if (app.requiresConfirmation) {
+    return t("appList.hint.requiresConfirmation");
   }
   if (app.isMigrated) {
     return t("appList.hint.migrated");
@@ -48,7 +66,13 @@ function migrationHint(app: AppCard): string {
 }
 
 function canMigrate(app: AppCard): boolean {
-  return app.tier !== "blocked" && !app.running && !app.isMigrated;
+  if (app.availability === "blocked" || app.availability === "deprecated") {
+    return false;
+  }
+  if (app.hasExecutableUnit === false) {
+    return false;
+  }
+  return !app.running && !app.isMigrated;
 }
 
 function markIconError(appId: string): void {
@@ -61,6 +85,66 @@ function migratedLabel(app: AppCard): string {
   }
   return t("appList.migrated");
 }
+
+function stopCopyFeedbackTimer(): void {
+  if (copyFeedbackTimer !== null) {
+    window.clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = null;
+  }
+}
+
+function normalizePath(rawPath: string): string {
+  return rawPath.trim();
+}
+
+function hasActionablePath(rawPath: string): boolean {
+  return normalizePath(rawPath).startsWith("/");
+}
+
+async function onCopyPath(app: AppCard): Promise<void> {
+  const path = normalizePath(app.path);
+  if (!hasActionablePath(path)) {
+    return;
+  }
+
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("clipboard API unavailable");
+    }
+    await navigator.clipboard.writeText(path);
+    copiedPathAppId.value = app.id;
+    pathActionError.value = null;
+    stopCopyFeedbackTimer();
+    copyFeedbackTimer = window.setTimeout(() => {
+      copiedPathAppId.value = null;
+      copyFeedbackTimer = null;
+    }, 1200);
+  } catch (err) {
+    pathActionError.value = t("appList.pathActions.copyFailed", {
+      error: formatCommandError(err)
+    });
+  }
+}
+
+async function onOpenInFinder(app: AppCard): Promise<void> {
+  const path = normalizePath(app.path);
+  if (!hasActionablePath(path)) {
+    return;
+  }
+
+  try {
+    await invoke("open_in_finder", { path });
+    pathActionError.value = null;
+  } catch (err) {
+    pathActionError.value = t("appList.pathActions.openFailed", {
+      error: formatCommandError(err)
+    });
+  }
+}
+
+onBeforeUnmount(() => {
+  stopCopyFeedbackTimer();
+});
 </script>
 
 <template>
@@ -82,6 +166,9 @@ function migratedLabel(app: AppCard): string {
 
     <div v-if="props.error" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
       {{ props.error }}
+    </div>
+    <div v-if="pathActionError" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+      {{ pathActionError }}
     </div>
 
     <div class="grid grid-cols-1 gap-4">
@@ -107,16 +194,52 @@ function migratedLabel(app: AppCard): string {
             <span v-if="app.isMigrated" class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium">
               {{ migratedLabel(app) }}
             </span>
-            <span v-if="app.tier === 'experimental'" class="bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full font-medium">
-              {{ t("appList.tier.experimental") }}
+            <span
+              v-if="app.availability === 'deprecated'"
+              class="bg-gray-100 text-gray-700 text-xs px-2 py-0.5 rounded-full font-medium"
+            >
+              {{ t("appList.status.deprecated") }}
             </span>
-            <span v-if="app.tier === 'blocked'" class="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-medium">
-              {{ t("appList.tier.blocked") }}
+            <span
+              v-else-if="app.availability === 'blocked'"
+              class="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-medium"
+            >
+              {{ t("appList.status.blocked") }}
+            </span>
+            <span
+              v-else-if="app.requiresConfirmation"
+              class="bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full font-medium"
+            >
+              {{ t("appList.status.requiresConfirmation") }}
             </span>
           </div>
           <p class="text-sm text-gray-500 mt-1">{{ app.desc }}</p>
           <p class="text-xs text-gray-400 mt-1">{{ migrationHint(app) }}</p>
-          <p class="text-xs text-gray-400 mt-1 font-mono truncate max-w-md" :title="app.path">{{ app.path }}</p>
+          <div class="mt-1 flex items-center gap-2 min-w-0">
+            <p class="text-xs text-gray-400 font-mono truncate max-w-md" :title="app.path">{{ app.path }}</p>
+            <button
+              type="button"
+              data-test="app-open-path-btn"
+              :disabled="props.loading || !hasActionablePath(app.path)"
+              @click.stop.prevent="onOpenInFinder(app)"
+              class="text-xs text-gray-600 hover:text-gray-800 whitespace-nowrap disabled:text-gray-400"
+            >
+              {{ t("appList.pathActions.openInFinder") }}
+            </button>
+            <button
+              type="button"
+              data-test="app-copy-path-btn"
+              :disabled="props.loading || !hasActionablePath(app.path)"
+              @click.stop.prevent="onCopyPath(app)"
+              class="text-xs text-blue-600 hover:text-blue-700 whitespace-nowrap disabled:text-gray-400"
+            >
+              {{
+                copiedPathAppId === app.id
+                  ? t("appList.pathActions.copied")
+                  : t("appList.pathActions.copyPath")
+              }}
+            </button>
+          </div>
         </div>
 
         <div class="text-right px-4">

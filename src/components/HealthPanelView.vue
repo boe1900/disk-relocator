@@ -318,22 +318,24 @@ onBeforeUnmount(() => {
             >
               {{ diskState(status) }}
             </td>
-            <td class="p-4 flex gap-3">
-              <button class="text-blue-500 hover:underline" @click="onSelfCheck">
-                {{ t("health.recheck") }}
-              </button>
-              <button
-                v-if="status.state !== 'healthy'"
-                class="text-red-500 hover:underline"
-                :disabled="rollbackingRelocationId === status.relocation_id"
-                @click="onRollback(status.relocation_id)"
-              >
-                {{
-                  rollbackingRelocationId === status.relocation_id
-                    ? t("health.rollbacking")
-                    : t("health.rollback")
-                }}
-              </button>
+            <td class="p-4 align-middle">
+              <div class="flex items-center gap-3 min-h-5">
+                <button class="inline-flex items-center text-blue-500 hover:underline" @click="onSelfCheck">
+                  {{ t("health.recheck") }}
+                </button>
+                <button
+                  v-if="status.state !== 'healthy'"
+                  class="inline-flex items-center text-red-500 hover:underline"
+                  :disabled="rollbackingRelocationId === status.relocation_id"
+                  @click="onRollback(status.relocation_id)"
+                >
+                  {{
+                    rollbackingRelocationId === status.relocation_id
+                      ? t("health.rollbacking")
+                      : t("health.rollback")
+                  }}
+                </button>
+              </div>
             </td>
           </tr>
           <tr v-if="!loading && healthPayload.length === 0">

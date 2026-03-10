@@ -1,5 +1,7 @@
 # V1 Freeze Review（2026-03-05）
 
+> 注：本文件是 V1 冻结记录。当前运行时画像已升级到 v2.1（`availability + units` 模型），不再以 `tier/source_paths/health_checks/rollback_rules` 作为主结构。
+
 ## 评审范围
 
 1. 画像分级与结构字段：`app-profiles.json`
@@ -27,4 +29,3 @@
 1. `xcode-derived-data` 实机兼容性需进入测试矩阵验证。
 2. `experimental` 画像的二次确认文案与交互尚未定义。
 3. 错误码到 UI 文案的 i18n 表尚未建立。
-

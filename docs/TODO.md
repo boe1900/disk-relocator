@@ -2,8 +2,8 @@
 
 ## P0（必须先完成）
 
-- [x] T01 冻结 V1 画像与分级清单（至少 3 个 Supported 候选 + Experimental/Blocked 说明）
-  - 验收标准：画像 JSON 可被程序读取；每个画像包含 process/source_paths/health_checks/rollback_rules；评审记录可追踪。
+- [x] T01 冻结画像与风险清单（unit 粒度）
+  - 验收标准：画像 JSON 可被程序读取；每个画像包含 process/units；评审记录可追踪。
 
 - [x] T02 定义核心数据模型与持久化 schema（relocations / operation_logs / health_snapshots）
   - 验收标准：可一键初始化本地数据库；可写入并查询完整迁移记录；重启后数据不丢失。
@@ -11,7 +11,7 @@
 - [x] T03 固化 Tauri 命令契约与 DTO（scan_apps/get_disk_status/migrate_app/rollback_relocation/list_relocations/check_health）
   - 验收标准：命令签名与字段冻结；前后端类型对齐；空实现可编译并通过基础调用测试。
 
-- [x] T04 实现预检引擎（进程运行态、权限、磁盘在线可写、空间余量、分级拦截）
+- [x] T04 实现预检引擎（进程运行态、权限、磁盘在线可写、空间余量、availability/unit 拦截）
   - 验收标准：每个预检项均可返回明确错误码与修复建议；单项失败可稳定拦截迁移。
 
 - [x] T05 首次引导模式（首次直接落盘外接盘）

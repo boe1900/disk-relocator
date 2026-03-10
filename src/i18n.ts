@@ -44,18 +44,11 @@ const messages: Record<Locale, MessageTree> = {
         rollbackRecordMissing: "未找到 {name} 的回滚记录。",
         restoreDone: "{name} 已回滚到系统盘。",
         restoreFailed: "回滚失败：{error}",
-        migrationDone: "迁移完成：{label}"
+        migrationDone: "迁移完成：{label}",
+        unknownReason: "未知原因"
       },
       pathFallback: "(未检测到路径)",
-      descFallback: "应用数据目录迁移项",
-      appDescriptions: {
-        "wechat-non-mas": "仅迁移微信主容器（聊天记录与媒体数据主体）。",
-        "telegram-desktop": "包含 Telegram 聊天缓存与媒体文件。",
-        "jetbrains-caches": "JetBrains IDE 缓存目录，迁移后可释放大量系统盘空间。",
-        "xcode-derived-data": "Xcode DerivedData 构建缓存目录。",
-        "mas-sandbox-containers": "系统策略限制，不支持软链接迁移。",
-        "docker-desktop-data-root": "当前策略不支持软链接迁移，请使用 Docker 原生 data-root。"
-      }
+      descFallback: "应用数据目录迁移项"
     },
     appList: {
       title: "应用搬迁",
@@ -64,26 +57,44 @@ const messages: Record<Locale, MessageTree> = {
       refreshing: "刷新中...",
       migrated: "已外存",
       migratedTo: "已外存至 {disk}",
-      tier: {
-        experimental: "实验支持",
-        blocked: "已禁用"
+      status: {
+        requiresConfirmation: "需确认",
+        blocked: "已禁用",
+        deprecated: "已弃用"
       },
       hint: {
         blocked: "当前画像为 blocked，不支持迁移",
+        blockedWithReason: "当前画像被阻断：{reason}",
+        deprecated: "当前画像已弃用，默认不支持新迁移",
+        noExecutableUnit: "当前没有可迁移的数据单元",
         running: "应用正在运行，请先完全退出再迁移",
-        experimental: "实验支持，迁移前需确认风险",
+        requiresConfirmation: "包含需确认的数据单元，迁移前请确认风险",
         migrated: "已检测到软链接迁移状态",
         ready: "可直接迁移"
       },
       sizeLabel: "目录大小",
       migrate: "搬迁外存",
       restore: "恢复到系统",
+      pathActions: {
+        openInFinder: "在 Finder 打开",
+        copyPath: "复制路径",
+        copied: "已复制",
+        openFailed: "在 Finder 打开失败：{error}",
+        copyFailed: "复制路径失败：{error}"
+      },
       empty: "未检测到可识别应用。请先启动一次目标应用后再刷新扫描。"
     },
     migrationDialog: {
       title: "迁移 {name}",
       subtitle: "系统将自动移动数据目录并建立软链接，此过程安全可逆。",
       sizeLabel: "需要迁移的数据量",
+      unitLabel: "迁移目录单元",
+      unitHint: "已选 {selected}/{total}",
+      selectAllUnits: "全选",
+      clearUnits: "清空",
+      openInFinder: "在 Finder 打开",
+      copyPath: "复制路径",
+      pathCopied: "已复制",
       diskLabel: "选择目标外接磁盘",
       diskHint: "仅显示“已挂载且可写”的磁盘。",
       diskFree: "可用 {size}",
@@ -98,7 +109,7 @@ const messages: Record<Locale, MessageTree> = {
       picking: "选择中...",
       selectDiskFirst: "请先选择目标盘，再使用系统选择。",
       pathNotInDisk: "所选路径不在目标盘 {disk} 下，请在该盘内选择。",
-      allowExperimental: "我已知晓 experimental 风险并允许执行迁移。",
+      confirmHighRisk: "我已知晓高风险单元并允许执行迁移。",
       cleanupBackup: "迁移成功后清理本地备份（.bak），释放系统盘空间。",
       warning: "迁移过程中请勿拔除外接硬盘，也请确保 {name} 已经完全退出。",
       skippedTitle: "本次将跳过：",
@@ -121,7 +132,16 @@ const messages: Record<Locale, MessageTree> = {
         sourceDetected: "检测到源数据，准备迁移"
       },
       errors: {
-        startFailed: "迁移失败：{error}"
+        startFailed: "迁移失败：{error}",
+        copyPathFailed: "复制路径失败：{error}",
+        openPathFailed: "在 Finder 打开失败：{error}",
+        targetPathExists:
+          "目标目录已存在：{path}。为避免覆盖，已停止迁移。可更换目标目录，或先在 Finder 中重命名/移动该目录后重试。",
+        targetPathExistsNoPath:
+          "目标目录已存在。为避免覆盖，已停止迁移。可更换目标目录，或先处理旧目录后重试。",
+        backupPathExists:
+          "备份目录已存在：{path}。为避免覆盖，已停止迁移。请先处理该目录后再试。",
+        backupPathExistsNoPath: "备份目录已存在。为避免覆盖，已停止迁移。请先处理该目录后再试。"
       },
       doneMessage: "迁移完成：{label}",
       fallbackLabel: "目标应用"
@@ -235,22 +255,11 @@ const messages: Record<Locale, MessageTree> = {
         rollbackRecordMissing: "No rollback record found for {name}.",
         restoreDone: "{name} has been restored to the system disk.",
         restoreFailed: "Rollback failed: {error}",
-        migrationDone: "Migration completed: {label}"
+        migrationDone: "Migration completed: {label}",
+        unknownReason: "unknown reason"
       },
       pathFallback: "(path not detected)",
-      descFallback: "App data relocation profile",
-      appDescriptions: {
-        "wechat-non-mas":
-          "Move WeChat main container only (primary chat and media data).",
-        "telegram-desktop": "Includes Telegram chat cache and media files.",
-        "jetbrains-caches":
-          "JetBrains IDE cache directory. Migration can free significant system disk space.",
-        "xcode-derived-data": "Xcode DerivedData build cache directory.",
-        "mas-sandbox-containers":
-          "Restricted by system policy. Symlink migration is not supported.",
-        "docker-desktop-data-root":
-          "Symlink migration is not supported. Use Docker native data-root instead."
-      }
+      descFallback: "App data relocation profile"
     },
     appList: {
       title: "App Migration",
@@ -260,20 +269,31 @@ const messages: Record<Locale, MessageTree> = {
       refreshing: "Refreshing...",
       migrated: "Relocated",
       migratedTo: "Relocated to {disk}",
-      tier: {
-        experimental: "Experimental",
-        blocked: "Blocked"
+      status: {
+        requiresConfirmation: "Needs Confirmation",
+        blocked: "Blocked",
+        deprecated: "Deprecated"
       },
       hint: {
         blocked: "Current profile is blocked and cannot be migrated",
+        blockedWithReason: "Current profile is blocked: {reason}",
+        deprecated: "Current profile is deprecated and does not allow new migration",
+        noExecutableUnit: "No executable relocation unit is currently available",
         running: "App is running. Please quit it before migration",
-        experimental: "Experimental support. Confirm risk before migration",
+        requiresConfirmation: "Contains units that require confirmation before migration",
         migrated: "Symlink migration state already detected",
         ready: "Ready to migrate"
       },
       sizeLabel: "Directory Size",
       migrate: "Move to External",
       restore: "Restore to System",
+      pathActions: {
+        openInFinder: "Show in Finder",
+        copyPath: "Copy Path",
+        copied: "Copied",
+        openFailed: "Failed to show path in Finder: {error}",
+        copyFailed: "Failed to copy path: {error}"
+      },
       empty: "No recognized app found. Launch the target app once and refresh."
     },
     migrationDialog: {
@@ -281,6 +301,13 @@ const messages: Record<Locale, MessageTree> = {
       subtitle:
         "The system will move the data directory and create a symlink automatically. This is safe and reversible.",
       sizeLabel: "Data Size to Migrate",
+      unitLabel: "Relocation Units",
+      unitHint: "{selected}/{total} selected",
+      selectAllUnits: "Select All",
+      clearUnits: "Clear",
+      openInFinder: "Show in Finder",
+      copyPath: "Copy Path",
+      pathCopied: "Copied",
       diskLabel: "Select Target External Disk",
       diskHint: "Only mounted and writable disks are listed.",
       diskFree: "Free {size}",
@@ -295,7 +322,7 @@ const messages: Record<Locale, MessageTree> = {
       picking: "Picking...",
       selectDiskFirst: "Select a target disk before using system picker.",
       pathNotInDisk: "Selected path is not under disk {disk}. Please pick inside that disk.",
-      allowExperimental: "I understand experimental risk and allow migration.",
+      confirmHighRisk: "I understand the high-risk unit and allow migration.",
       cleanupBackup: "Cleanup local backup (.bak) after success to free system disk space.",
       warning:
         "Do not unplug the external disk during migration. Also make sure {name} is fully quit.",
@@ -322,7 +349,17 @@ const messages: Record<Locale, MessageTree> = {
         sourceDetected: "source data detected, ready to migrate"
       },
       errors: {
-        startFailed: "Migration failed: {error}"
+        startFailed: "Migration failed: {error}",
+        copyPathFailed: "Failed to copy path: {error}",
+        openPathFailed: "Failed to show path in Finder: {error}",
+        targetPathExists:
+          "Target directory already exists: {path}. Migration is stopped to avoid overwriting. Choose another target path, or rename/move this directory in Finder and retry.",
+        targetPathExistsNoPath:
+          "Target directory already exists. Migration is stopped to avoid overwriting. Choose another target path, or handle the existing directory and retry.",
+        backupPathExists:
+          "Backup directory already exists: {path}. Migration is stopped to avoid overwriting. Handle this directory and retry.",
+        backupPathExistsNoPath:
+          "Backup directory already exists. Migration is stopped to avoid overwriting. Handle this directory and retry."
       },
       doneMessage: "Migration completed: {label}",
       fallbackLabel: "target app"

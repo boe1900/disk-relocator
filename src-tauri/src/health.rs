@@ -342,7 +342,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_001".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: target_root.to_string_lossy().to_string(),
@@ -390,7 +389,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_002".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: missing_root.to_string_lossy().to_string(),
@@ -432,7 +430,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_003".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: target_root.to_string_lossy().to_string(),
@@ -472,7 +469,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_004".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: target_root.to_string_lossy().to_string(),
@@ -511,7 +507,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_005".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: target_root.to_string_lossy().to_string(),
@@ -551,7 +546,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_006".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: target_root.to_string_lossy().to_string(),
@@ -595,7 +589,6 @@ mod tests {
         db.insert_relocation(&NewRelocationRecord {
             relocation_id: "reloc_health_007".to_string(),
             app_id: "telegram-desktop".to_string(),
-            tier: "supported".to_string(),
             mode: "migrate".to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_root: target_root.to_string_lossy().to_string(),

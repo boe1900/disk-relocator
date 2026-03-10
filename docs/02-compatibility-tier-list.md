@@ -1,68 +1,56 @@
-# 兼容性分级清单
+# 兼容性与风险清单（Unit 模型）
 
-## 1. 分级定义
+## 1. 模型定义
 
-- `Supported`：
-  - 在测试矩阵中迁移成功率稳定
-  - 迁移后应用功能正常
-  - 回滚流程已验证
-- `Experimental`：
-  - 部分系统版本/安装来源可用
-  - 需要额外风险提示和二次确认
-- `Blocked`：
-  - 已知高风险或平台策略冲突
-  - 默认禁止迁移入口
+- `profile.availability`
+  - `active`: 可进入迁移流程
+  - `blocked`: 禁止迁移
+  - `deprecated`: 默认不允许新迁移，仅保留历史识别
+- `unit.risk_level`
+  - `stable`: 默认无需额外确认
+  - `cautious`: 建议提示风险，可按产品策略要求确认
+  - `high`: 必须配合 `requires_confirmation=true`
 
-## 2. V1 初始候选矩阵（草案）
+## 2. 当前策略（2026-03-10）
 
-| 应用/数据类型 | 典型路径 | 分级 | 说明 |
+| 应用/数据类型 | 迁移单元（unit） | 处理策略 | 说明 |
 |---|---|---|---|
-| 微信（非 MAS）数据 | `~/Library/Containers/com.tencent.xinWeChat` 或应用私有目录 | Experimental | 容器路径行为受版本与分发来源影响大 |
-| Telegram（非 MAS） | `~/Library/Application Support/Telegram Desktop` | Supported（候选） | 路径明确，需保证迁移前完全退出 |
-| JetBrains 缓存 | `~/Library/Caches/JetBrains/*` | Supported（候选） | 业务风险低，回滚简单 |
-| Docker Desktop 镜像/VM 数据 | Docker 自管目录 | Blocked（软链接模式） | 应改为 Docker 原生 data-root 配置方案 |
-| Apple 系统应用数据 | 受保护路径 | Blocked | SIP/系统保护导致风险高 |
-| MAS 沙盒应用容器 | `~/Library/Containers/*` | Experimental 或 Blocked | 常见路径和权限校验约束严格 |
+| WeChat（非 MAS）数据目录 | `xwechat_files` | `active` + `stable` | 当前仅保留此单元并整体迁移 |
 
-说明：
-- 最终分级必须来自可复现测试结果，不靠经验判断。
-- V1 优先上线高确定性的 `Supported` 项目。
+## 3. 画像最小要素
 
-## 3. 应用画像（Profile）检测要素
+每个 profile 至少包含：
 
-每个应用画像至少应定义：
+1. `app_id`、`display_name`
+2. `process_names`（运行态拦截）
+3. `units[]`（每个 unit 独立定义 `unit_id/source_path/target_path_template`）
 
-1. 运行进程名（用于运行态拦截）
-2. 源路径候选与优先级
-3. 关键锁文件或高波动文件规则
-4. 迁移后健康检查规则
-5. 回滚规则
+## 4. 前端透明信息
 
-## 4. 用户侧透明策略
+界面应固定展示：
 
-界面必须固定展示：
+1. 可迁移的 unit 列表（支持多选）
+2. 每个 unit 的风险/阻断原因
+3. 迁移前置条件（进程退出、磁盘可写等）
 
-1. 当前分级
-2. 风险摘要
-3. 迁移前置条件
-4. 已测试的应用版本范围
-5. 最近验证日期
-
-## 5. 兼容性元数据示例
+## 5. 示例
 
 ```json
 {
-  "app_id": "telegram-desktop",
-  "display_name": "Telegram Desktop",
-  "tier": "supported",
-  "source_paths": [
-    "~/Library/Application Support/Telegram Desktop"
-  ],
-  "process_names": ["Telegram"],
-  "health_checks": [
-    {"type": "path_exists", "path": "~/Library/Application Support/Telegram Desktop"},
-    {"type": "is_symlink", "path": "~/Library/Application Support/Telegram Desktop"}
-  ],
-  "notes": "迁移前必须关闭应用。"
+  "app_id": "wechat-non-mas",
+  "display_name": "WeChat (Non-MAS)",
+  "availability": "active",
+  "process_names": ["WeChat"],
+  "units": [
+    {
+      "unit_id": "xwechat-files",
+      "display_name": "xwechat_files",
+      "category": "media",
+      "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
+      "target_path_template": "{target_root}/AppData/WeChat/xwechat_files",
+      "risk_level": "stable",
+      "requires_confirmation": false
+    }
+  ]
 }
 ```

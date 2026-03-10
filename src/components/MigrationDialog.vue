@@ -3,22 +3,44 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { AlertCircle, ArrowRightLeft, CheckCircle2, HardDrive } from "lucide-vue-next";
-import type { AppScanResult, DiskStatus, MigrateRequest, RelocationResult } from "../types/contracts";
+import type {
+  AppScanPath,
+  AppScanResult,
+  DiskStatus,
+  MigrateRequest,
+  RelocationResult
+} from "../types/contracts";
 import { useI18n } from "../i18n";
 import { formatCommandError } from "../utils/error";
 
 interface SourceSummary {
   exists: boolean;
   hasSymlink: boolean;
-  totalBytes: number;
+  sizeBytes: number;
   hasData: boolean;
+  path: string;
+  unitId: string | null;
+  unitLabel: string;
+  defaultEnabled: boolean;
+  enabled: boolean;
+  riskLevel: string;
+  requiresConfirmation: boolean;
+  blockedReason: string | null;
+  allowBootstrapIfSourceMissing: boolean;
 }
 
 interface MigrationPlanItem {
+  key: string;
   app: AppScanResult;
+  unitId: string | null;
+  unitLabel: string;
+  sourcePath: string;
+  sourceSizeBytes: number;
   mode: MigrateRequest["mode"];
   execute: boolean;
   reason: string;
+  defaultSelected: boolean;
+  requiresConfirmation: boolean;
 }
 
 const props = defineProps<{
@@ -38,14 +60,81 @@ const migrationStep = ref(0); // 0: setup, 1: migrating, 2: success
 const progress = ref(0);
 const targetDiskMount = ref("");
 const targetRoot = ref("");
-const allowExperimental = ref(false);
+const confirmHighRisk = ref(false);
 const cleanupBackupAfterMigrate = ref(true);
 const loading = ref(false);
 const selectingTargetRoot = ref(false);
 const error = ref<string | null>(null);
 const successResults = ref<RelocationResult[]>([]);
+const selectedPlanKeys = ref<string[]>([]);
+const copiedPathKey = ref<string | null>(null);
 
 let progressTimer: number | null = null;
+let copyFeedbackTimer: number | null = null;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseJsonIfPossible(input: string): unknown {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return input;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return input;
+  }
+}
+
+function normalizeInvokeError(err: unknown): unknown {
+  if (typeof err === "string") {
+    return parseJsonIfPossible(err);
+  }
+  return err;
+}
+
+function formatMigrationStartError(err: unknown): string {
+  const normalized = normalizeInvokeError(err);
+  if (!isRecord(normalized)) {
+    return t("migrationDialog.errors.startFailed", { error: formatCommandError(err) });
+  }
+
+  const code = typeof normalized.code === "string" ? normalized.code : "";
+  const traceId = typeof normalized.trace_id === "string" ? normalized.trace_id : "";
+  const details = isRecord(normalized.details) ? normalized.details : null;
+  const withTrace = (message: string): string =>
+    traceId ? `${message} (trace_id=${traceId})` : message;
+
+  if (code === "PRECHECK_TARGET_PATH_EXISTS") {
+    const targetPath =
+      details && typeof details.target_path === "string" ? details.target_path.trim() : "";
+    if (targetPath) {
+      return withTrace(
+        t("migrationDialog.errors.targetPathExists", {
+          path: targetPath
+        })
+      );
+    }
+    return withTrace(t("migrationDialog.errors.targetPathExistsNoPath"));
+  }
+
+  if (code === "PRECHECK_BACKUP_PATH_EXISTS") {
+    const backupPath =
+      details && typeof details.backup_path === "string" ? details.backup_path.trim() : "";
+    if (backupPath) {
+      return withTrace(
+        t("migrationDialog.errors.backupPathExists", {
+          path: backupPath
+        })
+      );
+    }
+    return withTrace(t("migrationDialog.errors.backupPathExistsNoPath"));
+  }
+
+  return t("migrationDialog.errors.startFailed", { error: formatCommandError(err) });
+}
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
@@ -61,52 +150,128 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function summarizeSource(app?: AppScanResult): SourceSummary {
-  const paths = app?.detected_paths ?? [];
-  const existing = paths.filter((path) => path.exists);
-  const hasSymlink = existing.some((path) => path.is_symlink);
-  const totalBytes = existing.reduce((sum, path) => sum + path.size_bytes, 0);
+function normalizeDetectedPaths(app: AppScanResult): AppScanPath[] {
+  const paths = app.detected_paths ?? [];
+  if (paths.length > 0) {
+    return paths;
+  }
+  return [
+    {
+      display_name: app.display_name,
+      default_enabled: true,
+      path: "",
+      exists: false,
+      is_symlink: false,
+      size_bytes: 0
+    }
+  ];
+}
+
+function resolveUnitLabel(app: AppScanResult, path: AppScanPath, index: number): string {
+  if (path.display_name?.trim()) {
+    return path.display_name.trim();
+  }
+  if (path.unit_id?.trim()) {
+    return path.unit_id.trim();
+  }
+  if (path.path.trim()) {
+    const segments = path.path.split("/").filter(Boolean);
+    const tail = segments[segments.length - 1];
+    if (tail) {
+      return tail;
+    }
+  }
+  return `${app.display_name} #${index + 1}`;
+}
+
+function summarizeSource(app: AppScanResult, path: AppScanPath, index: number): SourceSummary {
+  const sizeBytes = path.exists && !path.is_symlink ? Math.max(0, path.size_bytes) : 0;
+  const riskLevel = (path.risk_level ?? "stable").toString();
+  const enabled = path.enabled !== false;
+  const blockedReason = path.blocked_reason?.trim() || null;
   return {
-    exists: existing.length > 0,
-    hasSymlink,
-    totalBytes,
-    hasData: totalBytes > 0
+    exists: path.exists,
+    hasSymlink: path.exists && path.is_symlink,
+    sizeBytes,
+    hasData: sizeBytes > 0,
+    path: path.path ?? "",
+    unitId: path.unit_id?.trim() || null,
+    unitLabel: resolveUnitLabel(app, path, index),
+    defaultEnabled: path.default_enabled !== false && enabled,
+    enabled,
+    riskLevel,
+    requiresConfirmation:
+      path.requires_confirmation !== undefined
+        ? path.requires_confirmation
+        : riskLevel !== "stable",
+    blockedReason,
+    allowBootstrapIfSourceMissing: path.allow_bootstrap_if_source_missing === true
   };
 }
 
-function pickMode(app: AppScanResult, source: SourceSummary): MigrateRequest["mode"] {
+function pickMode(source: SourceSummary): MigrateRequest["mode"] {
   if (source.hasData) {
     return "migrate";
   }
-  if (app.allow_bootstrap_if_source_missing) {
+  if (source.allowBootstrapIfSourceMissing) {
     return "bootstrap";
   }
   return "migrate";
 }
 
-function buildPlanItem(app: AppScanResult): MigrationPlanItem {
-  const source = summarizeSource(app);
-  const mode = pickMode(app, source);
+function buildPlanItem(app: AppScanResult, path: AppScanPath, index: number): MigrationPlanItem {
+  const source = summarizeSource(app, path, index);
+  const mode = pickMode(source);
+  const key = source.unitId ? source.unitId : `path-${index + 1}`;
+  const base: Omit<MigrationPlanItem, "execute" | "reason"> = {
+    key,
+    app,
+    unitId: source.unitId,
+    unitLabel: source.unitLabel,
+    sourcePath: source.path,
+    sourceSizeBytes: source.sizeBytes,
+    mode,
+    defaultSelected: source.defaultEnabled,
+    requiresConfirmation: source.requiresConfirmation
+  };
 
-  if (app.tier === "blocked") {
-    return { app, mode, execute: false, reason: t("migrationDialog.reason.blocked") };
+  if (app.availability === "blocked" || app.availability === "deprecated") {
+    return { ...base, execute: false, reason: t("migrationDialog.reason.blocked") };
   }
   if (app.running) {
-    return { app, mode, execute: false, reason: t("migrationDialog.reason.running") };
+    return { ...base, execute: false, reason: t("migrationDialog.reason.running") };
   }
-  if (source.hasSymlink) {
-    return { app, mode, execute: false, reason: t("migrationDialog.reason.migrated") };
+  if (!source.enabled) {
+    return { ...base, execute: false, reason: source.blockedReason || t("migrationDialog.reason.blocked") };
   }
-  if (!source.exists && !app.allow_bootstrap_if_source_missing) {
-    return { app, mode, execute: false, reason: t("migrationDialog.reason.sourceMissingNoData") };
+  if (source.blockedReason) {
+    return { ...base, execute: false, reason: source.blockedReason };
+  }
+  if (source.exists && source.hasSymlink) {
+    return { ...base, execute: false, reason: t("migrationDialog.reason.migrated") };
+  }
+  if (!source.exists && !source.allowBootstrapIfSourceMissing) {
+    return { ...base, execute: false, reason: t("migrationDialog.reason.sourceMissingNoData") };
   }
   if (!source.exists && mode === "bootstrap") {
-    return { app, mode, execute: true, reason: t("migrationDialog.reason.sourceMissingBootstrap") };
+    return { ...base, execute: true, reason: t("migrationDialog.reason.sourceMissingBootstrap") };
   }
   if (!source.hasData && mode === "bootstrap") {
-    return { app, mode, execute: true, reason: t("migrationDialog.reason.sourceEmptyBootstrap") };
+    return { ...base, execute: true, reason: t("migrationDialog.reason.sourceEmptyBootstrap") };
   }
-  return { app, mode, execute: true, reason: t("migrationDialog.reason.sourceDetected") };
+  return { ...base, execute: true, reason: t("migrationDialog.reason.sourceDetected") };
+}
+
+function defaultSelectedPlanKeys(items: MigrationPlanItem[]): string[] {
+  const executable = items.filter((item) => item.execute);
+  if (executable.length === 0) {
+    return [];
+  }
+  const preferred = executable.filter((item) => item.defaultSelected);
+  if (preferred.length > 0) {
+    return preferred.map((item) => item.key);
+  }
+  return executable.map((item) => item.key);
 }
 
 const candidateDisks = computed(() =>
@@ -117,16 +282,20 @@ const migrationPlan = computed<MigrationPlanItem[]>(() => {
   if (!props.selectedApp) {
     return [];
   }
-  return [buildPlanItem(props.selectedApp)];
+  return normalizeDetectedPaths(props.selectedApp).map((path, index) =>
+    buildPlanItem(props.selectedApp as AppScanResult, path, index)
+  );
 });
 
 const executablePlan = computed(() => migrationPlan.value.filter((item) => item.execute));
 const skippedPlan = computed(() => migrationPlan.value.filter((item) => !item.execute));
-const needsExperimentalConfirm = computed(() =>
-  executablePlan.value.some((item) => item.app.tier === "experimental")
+const selectedExecutablePlan = computed(() => {
+  const selected = new Set(selectedPlanKeys.value);
+  return executablePlan.value.filter((item) => selected.has(item.key));
+});
+const needsRiskConfirmation = computed(() =>
+  selectedExecutablePlan.value.some((item) => item.requiresConfirmation)
 );
-
-const selectedSource = computed(() => summarizeSource(props.selectedApp ?? undefined));
 
 const targetRootOptions = computed(() => {
   const options = targetDiskMount.value
@@ -160,7 +329,11 @@ const selectedDiskName = computed(() => {
   return disk?.display_name ?? targetDiskMount.value;
 });
 
-const selectedAppSizeText = computed(() => formatBytes(selectedSource.value.totalBytes));
+const selectedAppSizeText = computed(() =>
+  formatBytes(
+    selectedExecutablePlan.value.reduce((sum, item) => sum + Math.max(0, item.sourceSizeBytes), 0)
+  )
+);
 
 const canStart = computed(() => {
   if (!props.selectedApp) {
@@ -172,10 +345,10 @@ const canStart = computed(() => {
   if (loading.value) {
     return false;
   }
-  if (executablePlan.value.length === 0) {
+  if (selectedExecutablePlan.value.length === 0) {
     return false;
   }
-  if (needsExperimentalConfirm.value && !allowExperimental.value) {
+  if (needsRiskConfirmation.value && !confirmHighRisk.value) {
     return false;
   }
   return true;
@@ -184,11 +357,14 @@ const canStart = computed(() => {
 function resetDialogState(): void {
   migrationStep.value = 0;
   progress.value = 0;
-  allowExperimental.value = false;
+  confirmHighRisk.value = false;
   cleanupBackupAfterMigrate.value = true;
   loading.value = false;
   error.value = null;
   successResults.value = [];
+  selectedPlanKeys.value = defaultSelectedPlanKeys(migrationPlan.value);
+  copiedPathKey.value = null;
+  stopCopyFeedbackTimer();
 
   const defaultDisk = candidateDisks.value[0]?.mount_point ?? "";
   targetDiskMount.value = defaultDisk;
@@ -205,10 +381,32 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => [props.showModal, migrationPlan.value.map((item) => item.key).join("|")],
+  ([show]) => {
+    if (!show) {
+      return;
+    }
+    const validKeys = new Set(migrationPlan.value.map((item) => item.key));
+    selectedPlanKeys.value = selectedPlanKeys.value.filter((key) => validKeys.has(key));
+    if (selectedPlanKeys.value.length === 0) {
+      selectedPlanKeys.value = defaultSelectedPlanKeys(migrationPlan.value);
+    }
+  },
+  { immediate: true }
+);
+
 function stopProgressAnimation(): void {
   if (progressTimer !== null) {
     window.clearInterval(progressTimer);
     progressTimer = null;
+  }
+}
+
+function stopCopyFeedbackTimer(): void {
+  if (copyFeedbackTimer !== null) {
+    window.clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = null;
   }
 }
 
@@ -226,6 +424,59 @@ function startProgressAnimation(): void {
 function onSelectDisk(mountPoint: string): void {
   targetDiskMount.value = mountPoint;
   targetRoot.value = mountPoint;
+}
+
+function onSelectAllUnits(): void {
+  selectedPlanKeys.value = executablePlan.value.map((item) => item.key);
+}
+
+function onClearUnits(): void {
+  selectedPlanKeys.value = [];
+}
+
+function onToggleUnit(key: string, checked: boolean): void {
+  const current = new Set(selectedPlanKeys.value);
+  if (checked) {
+    current.add(key);
+  } else {
+    current.delete(key);
+  }
+  selectedPlanKeys.value = Array.from(current);
+}
+
+async function onCopyPath(item: MigrationPlanItem): Promise<void> {
+  const sourcePath = item.sourcePath?.trim();
+  if (!sourcePath) {
+    return;
+  }
+
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("clipboard API unavailable");
+    }
+    await navigator.clipboard.writeText(sourcePath);
+    copiedPathKey.value = item.key;
+    stopCopyFeedbackTimer();
+    copyFeedbackTimer = window.setTimeout(() => {
+      copiedPathKey.value = null;
+      copyFeedbackTimer = null;
+    }, 1200);
+  } catch (err) {
+    error.value = t("migrationDialog.errors.copyPathFailed", { error: formatCommandError(err) });
+  }
+}
+
+async function onOpenInFinder(item: MigrationPlanItem): Promise<void> {
+  const sourcePath = item.sourcePath?.trim();
+  if (!sourcePath) {
+    return;
+  }
+
+  try {
+    await invoke("open_in_finder", { path: sourcePath });
+  } catch (err) {
+    error.value = t("migrationDialog.errors.openPathFailed", { error: formatCommandError(err) });
+  }
 }
 
 async function onPickTargetRoot(): Promise<void> {
@@ -275,19 +526,22 @@ async function onStartMigration(): Promise<void> {
 
   const results: RelocationResult[] = [];
   try {
-    for (let index = 0; index < executablePlan.value.length; index += 1) {
-      const item = executablePlan.value[index];
+    for (let index = 0; index < selectedExecutablePlan.value.length; index += 1) {
+      const item = selectedExecutablePlan.value[index];
       const request: MigrateRequest = {
         app_id: item.app.app_id,
         target_root: targetRoot.value.trim(),
         mode: item.mode,
-        allow_experimental: allowExperimental.value,
+        confirm_high_risk: confirmHighRisk.value,
         cleanup_backup_after_migrate: cleanupBackupAfterMigrate.value
       };
+      if (item.unitId) {
+        request.unit_id = item.unitId;
+      }
       const result = await invoke<RelocationResult>("migrate_app", { req: request });
       results.push(result);
 
-      const ratio = (index + 1) / executablePlan.value.length;
+      const ratio = (index + 1) / selectedExecutablePlan.value.length;
       progress.value = Math.max(progress.value, Math.floor(ratio * 96));
     }
 
@@ -300,7 +554,7 @@ async function onStartMigration(): Promise<void> {
   } catch (err) {
     stopProgressAnimation();
     migrationStep.value = 0;
-    error.value = t("migrationDialog.errors.startFailed", { error: formatCommandError(err) });
+    error.value = formatMigrationStartError(err);
   } finally {
     loading.value = false;
   }
@@ -315,15 +569,16 @@ function onFinish(): void {
 
 onBeforeUnmount(() => {
   stopProgressAnimation();
+  stopCopyFeedbackTimer();
 });
 </script>
 
 <template>
   <div
     v-if="props.showModal && props.selectedApp"
-    class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50"
+    class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto"
   >
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col my-auto">
       <template v-if="migrationStep === 0">
         <div class="p-6 border-b border-gray-100 flex items-start gap-4">
           <div class="w-12 h-12 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center flex-shrink-0">
@@ -337,13 +592,103 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="p-6 bg-gray-50/50 space-y-4">
+        <div class="p-6 bg-gray-50/50 space-y-4 flex-1 min-h-0 overflow-y-auto">
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-2">{{
               t("migrationDialog.sizeLabel")
             }}</label>
             <div class="bg-white p-3 rounded-lg border border-gray-200 text-lg font-mono font-bold text-gray-800">
               {{ selectedAppSizeText }}
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <label class="block text-sm font-medium text-gray-700">{{
+                t("migrationDialog.unitLabel")
+              }}</label>
+              <div class="text-xs text-gray-500">
+                {{
+                  t("migrationDialog.unitHint", {
+                    selected: selectedExecutablePlan.length,
+                    total: executablePlan.length
+                  })
+                }}
+              </div>
+            </div>
+            <div class="flex items-center gap-2 mb-2">
+              <button
+                type="button"
+                :disabled="loading || executablePlan.length === 0"
+                @click="onSelectAllUnits"
+                class="px-2 py-1 rounded border border-gray-200 text-xs text-gray-600 hover:bg-gray-100 disabled:text-gray-400 disabled:border-gray-100"
+              >
+                {{ t("migrationDialog.selectAllUnits") }}
+              </button>
+              <button
+                type="button"
+                :disabled="loading || selectedPlanKeys.length === 0"
+                @click="onClearUnits"
+                class="px-2 py-1 rounded border border-gray-200 text-xs text-gray-600 hover:bg-gray-100 disabled:text-gray-400 disabled:border-gray-100"
+              >
+                {{ t("migrationDialog.clearUnits") }}
+              </button>
+            </div>
+            <div class="space-y-2">
+              <div
+                v-for="item in migrationPlan"
+                :key="item.key"
+                :class="`flex items-start justify-between gap-3 p-3 rounded-lg border ${item.execute ? 'bg-white border-gray-200' : 'bg-gray-100 border-gray-200'}`"
+              >
+                <div class="flex items-start gap-3 min-w-0">
+                  <input
+                    type="checkbox"
+                    :checked="selectedPlanKeys.includes(item.key)"
+                    :disabled="loading || !item.execute"
+                    @change="onToggleUnit(item.key, ($event.target as HTMLInputElement).checked)"
+                    data-test="unit-checkbox"
+                    class="mt-0.5"
+                  />
+                  <div class="min-w-0">
+                    <div class="text-sm font-medium text-gray-800">{{ item.unitLabel }}</div>
+                    <div class="flex items-center gap-2 min-w-0">
+                      <div class="text-xs text-gray-500 font-mono truncate" :title="item.sourcePath || t('app.pathFallback')">
+                        {{ item.sourcePath || t("app.pathFallback") }}
+                      </div>
+                      <button
+                        type="button"
+                        data-test="open-path-btn"
+                        :disabled="loading || !(item.sourcePath || '').trim()"
+                        @pointerdown.stop.prevent
+                        @mousedown.stop.prevent
+                        @click.stop.prevent="onOpenInFinder(item)"
+                        class="text-xs text-gray-600 hover:text-gray-800 whitespace-nowrap disabled:text-gray-400"
+                      >
+                        {{ t("migrationDialog.openInFinder") }}
+                      </button>
+                      <button
+                        type="button"
+                        data-test="copy-path-btn"
+                        :disabled="loading || !(item.sourcePath || '').trim()"
+                        @pointerdown.stop.prevent
+                        @mousedown.stop.prevent
+                        @click.stop.prevent="onCopyPath(item)"
+                        class="text-xs text-blue-600 hover:text-blue-700 whitespace-nowrap disabled:text-gray-400"
+                      >
+                        {{
+                          copiedPathKey === item.key
+                            ? t("migrationDialog.pathCopied")
+                            : t("migrationDialog.copyPath")
+                        }}
+                      </button>
+                    </div>
+                    <div class="text-xs mt-1" :class="item.execute ? 'text-green-700' : 'text-gray-500'">
+                      {{ item.reason }}
+                    </div>
+                  </div>
+                </div>
+                <div class="text-xs text-gray-500 whitespace-nowrap">{{ formatBytes(item.sourceSizeBytes) }}</div>
+              </div>
             </div>
           </div>
 
@@ -405,13 +750,18 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <label v-if="needsExperimentalConfirm" class="flex items-start gap-2 text-sm text-gray-700">
-            <input v-model="allowExperimental" type="checkbox" class="mt-0.5" />
-            <span>{{ t("migrationDialog.allowExperimental") }}</span>
+          <label v-if="needsRiskConfirmation" class="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              v-model="confirmHighRisk"
+              data-test="confirm-high-risk-checkbox"
+              type="checkbox"
+              class="mt-0.5"
+            />
+            <span>{{ t("migrationDialog.confirmHighRisk") }}</span>
           </label>
 
           <label class="flex items-start gap-2 text-sm text-gray-700">
-            <input v-model="cleanupBackupAfterMigrate" type="checkbox" class="mt-0.5" />
+            <input v-model="cleanupBackupAfterMigrate" data-test="cleanup-checkbox" type="checkbox" class="mt-0.5" />
             <span>{{ t("migrationDialog.cleanupBackup") }}</span>
           </label>
 
@@ -424,7 +774,7 @@ onBeforeUnmount(() => {
 
           <div v-if="skippedPlan.length > 0" class="text-xs text-gray-500 leading-5">
             <div class="font-medium text-gray-700">{{ t("migrationDialog.skippedTitle") }}</div>
-            <div v-for="item in skippedPlan" :key="item.app.app_id">{{ item.app.display_name }}：{{ item.reason }}</div>
+            <div v-for="item in skippedPlan" :key="item.key">{{ item.unitLabel }}：{{ item.reason }}</div>
           </div>
 
           <div v-if="error" class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -456,7 +806,7 @@ onBeforeUnmount(() => {
         <div class="w-16 h-16 border-4 border-gray-100 border-t-blue-500 rounded-full animate-spin mb-6"></div>
         <h2 class="text-xl font-bold text-gray-900 mb-2">{{ t("migrationDialog.migratingTitle") }}</h2>
         <p class="text-sm text-gray-500 mb-6">
-          {{ t("migrationDialog.migratingSubtitle", { count: executablePlan.length, disk: selectedDiskName }) }}
+          {{ t("migrationDialog.migratingSubtitle", { count: selectedExecutablePlan.length, disk: selectedDiskName }) }}
         </p>
 
         <div class="w-full bg-gray-100 rounded-full h-3 mb-2 overflow-hidden">

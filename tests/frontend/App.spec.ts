@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { defineComponent } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.vue";
@@ -8,6 +9,10 @@ import { useI18n } from "../../src/i18n";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
   convertFileSrc: vi.fn((input: string) => `asset://${input}`)
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  confirm: vi.fn()
 }));
 
 const AppListStub = defineComponent({
@@ -64,7 +69,7 @@ function makeInvokeMock(options: {
       display_name: "WeChat",
       icon_path: "/Applications/WeChat.app/icon.icns",
       icon_data_url: null,
-      tier: "experimental",
+      availability: "active",
       detected_paths: [
         {
           path: "/Users/test/Library/Containers/com.tencent.xinWeChat",
@@ -143,12 +148,15 @@ function makeInvokeMock(options: {
 describe("App", () => {
   const invokeMock = vi.mocked(invoke);
   const convertFileSrcMock = vi.mocked(convertFileSrc);
+  const dialogConfirmMock = vi.mocked(dialogConfirm);
 
   beforeEach(() => {
     window.localStorage.clear();
     useI18n().setLocale("zh");
     invokeMock.mockReset();
     convertFileSrcMock.mockClear();
+    dialogConfirmMock.mockReset();
+    dialogConfirmMock.mockResolvedValue(true);
     vi.stubGlobal("confirm", vi.fn(() => true));
   });
 
@@ -264,7 +272,7 @@ describe("App", () => {
   });
 
   it("does not call rollback when user cancels confirm dialog", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => false));
+    dialogConfirmMock.mockResolvedValue(false);
     invokeMock.mockImplementation(
       makeInvokeMock({
         listRelocations: [
@@ -484,7 +492,7 @@ describe("App", () => {
             display_name: "Unknown App",
             icon_path: null,
             icon_data_url: null,
-            tier: "supported",
+            availability: "active",
             detected_paths: [],
             running: false,
             allow_bootstrap_if_source_missing: false,

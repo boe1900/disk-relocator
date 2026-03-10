@@ -1,4 +1,4 @@
--- Disk Relocator SQLite Schema v1
+-- Disk Relocator SQLite Schema
 -- Created at: 2026-03-05
 
 PRAGMA foreign_keys = ON;
@@ -7,7 +7,6 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS relocations (
   relocation_id TEXT PRIMARY KEY,
   app_id TEXT NOT NULL,
-  tier TEXT NOT NULL CHECK (tier IN ('supported', 'experimental', 'blocked')),
   mode TEXT NOT NULL CHECK (mode IN ('bootstrap', 'migrate')),
   source_path TEXT NOT NULL,
   target_root TEXT NOT NULL,
@@ -97,4 +96,3 @@ WHERE state IN (
   'FAILED_NEEDS_ROLLBACK',
   'ROLLING_BACK'
 );
-

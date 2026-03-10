@@ -10,13 +10,11 @@
 
 ## A. 首次引导模式（bootstrap）
 
-1. 打开「迁移执行」卡片。
-2. `应用` 选择 `wechat-non-mas`。
-3. `目标盘根路径` 填 `/Volumes/M4_Ext_SSD`（或你的挂载点）。
-4. `迁移模式` 选择 `bootstrap`。
-5. 勾选 experimental 确认框（该画像是 experimental）。
-6. 点击「执行迁移」。
-7. 返回结果中确认 `state=HEALTHY` 且 `health_state=healthy`。
+1. 打开「应用搬迁」页并选择 `wechat-non-mas`。
+2. 在迁移弹窗中，勾选可迁移单元 `media-and-files`。
+3. `目标盘根路径` 选择 `/Volumes/M4_Ext_SSD`（或你的挂载点）。
+4. 当检测为 `bootstrap` 场景时点击「开始迁移」。
+5. 等待完成，确认 `state=HEALTHY` 且 `health_state=healthy`。
 
 预期结果：
 - 原数据目录变为软链接，指向外接盘目标目录。
@@ -43,6 +41,6 @@
 ## D. 已有数据迁移模式（migrate）补充
 
 如果后续你想验证“已有微信数据”路径：
-1. 先确保源目录有真实数据；
-2. 在「迁移执行」里把模式改成 `migrate`；
+1. 先确保 `FileStorage` 下有真实数据；
+2. 在迁移弹窗保持勾选 `media-and-files` 并执行迁移；
 3. 执行后检查 `HEALTHY`，然后按上面的 C 步骤验证回滚。

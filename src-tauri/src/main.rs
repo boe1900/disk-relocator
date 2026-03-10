@@ -10,10 +10,12 @@ mod profiles;
 mod reconcile;
 mod recovery;
 
+use std::path::PathBuf;
 use tauri::Manager;
 
 pub struct AppState {
     pub db: db::Database,
+    pub app_data_dir: PathBuf,
 }
 
 fn main() {
@@ -21,13 +23,18 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
-            let database = db::Database::init(app_data_dir)?;
+            profiles::initialize_profile_store()
+                .map_err(|err| format!("profile initialization failed: {err}"))?;
+            let database = db::Database::init(app_data_dir.clone())?;
             let recovery_summary = recovery::recover_unfinished_relocations(&database)
                 .map_err(|err| format!("startup recovery failed: {err}"))?;
             health::spawn_health_monitor(database.clone());
             reconcile::spawn_reconcile_monitor(database.clone());
 
-            app.manage(AppState { db: database });
+            app.manage(AppState {
+                db: database,
+                app_data_dir,
+            });
 
             if recovery_summary.total > 0 {
                 println!(
@@ -45,6 +52,7 @@ fn main() {
             commands::scan_apps,
             commands::get_disk_status,
             commands::get_system_disk_status,
+            commands::open_in_finder,
             commands::migrate_app,
             commands::rollback_relocation,
             commands::list_operation_logs,

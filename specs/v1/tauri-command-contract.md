@@ -1,4 +1,4 @@
-# Tauri Command Contract v1
+# Tauri Command Contract
 
 本文件冻结命令签名和数据结构。当前为实现前契约，不含业务逻辑。
 
@@ -26,9 +26,23 @@
 {
   "app_id": "telegram-desktop",
   "display_name": "Telegram Desktop",
-  "tier": "supported",
+  "description_i18n": {
+    "zh": "包含 Telegram 聊天缓存与媒体文件。",
+    "en": "Includes Telegram chat cache and media files."
+  },
+  "availability": "active",
+  "blocked_reason": null,
   "detected_paths": [
     {
+      "unit_id": "main-data",
+      "display_name": "Main Data",
+      "default_enabled": true,
+      "enabled": true,
+      "risk_level": "stable",
+      "requires_confirmation": false,
+      "blocked_reason": null,
+      "allow_bootstrap_if_source_missing": true,
+      "category": "app-data",
       "path": "/Users/cola/Library/Application Support/Telegram Desktop",
       "exists": true,
       "is_symlink": false,
@@ -36,6 +50,7 @@
     }
   ],
   "running": false,
+  "allow_bootstrap_if_source_missing": true,
   "last_verified_at": "2026-03-05T10:00:00Z"
 }
 ```
@@ -53,6 +68,16 @@
 }
 ```
 
+### `open_in_finder(path: String) -> ()`
+
+请求：
+
+```json
+{
+  "path": "/Users/cola/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files"
+}
+```
+
 ### `migrate_app(req: MigrateRequest) -> RelocationResult`
 
 `MigrateRequest`:
@@ -60,9 +85,11 @@
 ```json
 {
   "app_id": "telegram-desktop",
+  "unit_id": "main-data",
   "target_root": "/Volumes/ExternalSSD",
   "mode": "bootstrap",
-  "allow_experimental": false
+  "confirm_high_risk": false,
+  "cleanup_backup_after_migrate": true
 }
 ```
 
@@ -220,6 +247,12 @@
 
 ## 4. 兼容性策略
 
-1. `tier=blocked` 的 `app_id`，`migrate_app` 必须直接返回 `PRECHECK_TIER_BLOCKED`。
-2. `tier=experimental` 且 `allow_experimental=false`，必须返回 `PRECHECK_EXPERIMENTAL_NOT_CONFIRMED`。
-3. `mode=bootstrap` 仅在画像声明 `allow_bootstrap_if_source_missing=true` 时允许执行。
+1. `availability in (blocked, deprecated)` 的 profile，`migrate_app` 必须返回 `PRECHECK_APP_BLOCKED`。
+2. `unit_id` 指向禁用单元（`enabled=false`）或带 `blocked_reason` 的单元，必须返回 `PRECHECK_UNIT_BLOCKED`。
+3. 选中单元 `requires_confirmation=true` 且 `confirm_high_risk=false`，必须返回 `PRECHECK_UNIT_CONFIRMATION_REQUIRED`。
+4. `mode=bootstrap` 仅在选中单元声明 `allow_bootstrap_if_source_missing=true` 时允许执行。
+5. 若请求未传 `unit_id`，后端按以下优先级自动选择单元：
+   `enabled && default_enabled && source_exists`
+   -> `enabled && default_enabled`
+   -> `enabled && source_exists`
+   -> `enabled`。
