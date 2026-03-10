@@ -55,7 +55,7 @@ const { locale, setLocale, t } = useI18n();
 
 const iconMap: Record<string, string> = {
   "wechat-non-mas": "💬",
-  "telegram-desktop": "✈️",
+  "telegram-mac-native": "✈️",
   "jetbrains-caches": "🧠",
   "xcode-derived-data": "🛠️",
   "mas-sandbox-containers": "🧩",
