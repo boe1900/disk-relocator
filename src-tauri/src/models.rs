@@ -142,6 +142,8 @@ pub struct RelocationSummary {
     pub health_state: String,
     pub source_path: String,
     pub target_path: String,
+    pub source_size_bytes: i64,
+    pub target_size_bytes: i64,
     pub updated_at: String,
 }
 

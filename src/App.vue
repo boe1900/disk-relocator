@@ -28,6 +28,7 @@ interface AppCard {
   icon: string;
   iconPath: string | null;
   size: string;
+  sizeLabel: string;
   isMigrated: boolean;
   targetDisk: string | null;
   path: string;
@@ -99,12 +100,32 @@ function pathRequiresConfirmation(path: AppScanResult["detected_paths"][number])
   return risk !== "stable";
 }
 
+function isActiveRelocationState(state: string | undefined): boolean {
+  const normalized = (state ?? "").trim().toUpperCase();
+  return normalized === "HEALTHY" || normalized === "DEGRADED" || normalized === "BROKEN";
+}
+
 const appCards = computed<AppCard[]>(() => {
   const latestRelocation = new Map<string, RelocationSummary>();
+  const relocationSavedBytes = new Map<string, number>();
   for (const row of relocations.value) {
     if (!latestRelocation.has(row.app_id)) {
       latestRelocation.set(row.app_id, row);
     }
+    if (!isActiveRelocationState(row.state)) {
+      continue;
+    }
+    const rowBytes =
+      (typeof row.source_size_bytes === "number" && row.source_size_bytes > 0
+        ? row.source_size_bytes
+        : 0) ||
+      (typeof row.target_size_bytes === "number" && row.target_size_bytes > 0
+        ? row.target_size_bytes
+        : 0);
+    if (rowBytes <= 0) {
+      continue;
+    }
+    relocationSavedBytes.set(row.app_id, (relocationSavedBytes.get(row.app_id) ?? 0) + rowBytes);
   }
 
   const cards: AppCard[] = [];
@@ -114,9 +135,7 @@ const appCards = computed<AppCard[]>(() => {
     const hasExecutableUnit = executablePaths.length > 0;
     const consideredPaths = hasExecutableUnit ? executablePaths : app.detected_paths;
     const existingPaths = consideredPaths.filter((path) => path.exists);
-    const sizeBytes = existingPaths
-      .filter((path) => !path.is_symlink)
-      .reduce((sum, path) => sum + path.size_bytes, 0);
+    const scannedSizeBytes = existingPaths.reduce((sum, path) => sum + path.size_bytes, 0);
     const isMigrated = hasExecutableUnit
       ? executablePaths.every((path) => path.exists && path.is_symlink)
       : existingPaths.some((path) => path.is_symlink);
@@ -130,6 +149,9 @@ const appCards = computed<AppCard[]>(() => {
       app.description_i18n?.[activeLocale] ?? app.description_i18n?.[localeBase] ?? null;
     const description = localizedDescription?.trim() || null;
     const relocation = latestRelocation.get(app.app_id);
+    const estimatedSavedBytes = relocationSavedBytes.get(app.app_id) ?? 0;
+    const sizeBytes = scannedSizeBytes > 0 ? scannedSizeBytes : isMigrated ? estimatedSavedBytes : 0;
+    const sizeLabel = isMigrated ? t("appList.sizeLabelSaved") : t("appList.sizeLabelCurrent");
 
     cards.push({
       id: app.app_id,
@@ -137,6 +159,7 @@ const appCards = computed<AppCard[]>(() => {
       icon: iconMap[app.app_id] ?? "📦",
       iconPath: app.icon_data_url ?? (app.icon_path ? convertFileSrc(app.icon_path) : null),
       size: formatBytes(sizeBytes),
+      sizeLabel,
       isMigrated,
       targetDisk: parseDiskName(relocation?.target_path),
       path: consideredPaths[0]?.path ?? app.detected_paths[0]?.path ?? t("app.pathFallback"),

@@ -14,6 +14,7 @@ interface AppCard {
   icon: string;
   iconPath: string | null;
   size: string;
+  sizeLabel?: string;
   isMigrated: boolean;
   targetDisk: string | null;
   path: string;

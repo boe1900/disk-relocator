@@ -155,6 +155,8 @@
   "health_state": "healthy",
   "source_path": "/Users/cola/Library/Application Support/Telegram Desktop",
   "target_path": "/Volumes/ExternalSSD/AppData/Telegram Desktop",
+  "source_size_bytes": 2147483648,
+  "target_size_bytes": 2147483648,
   "updated_at": "2026-03-05T10:05:00Z"
 }
 ```

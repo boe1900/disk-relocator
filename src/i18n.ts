@@ -73,6 +73,8 @@ const messages: Record<Locale, MessageTree> = {
         ready: "可直接迁移"
       },
       sizeLabel: "目录大小",
+      sizeLabelCurrent: "目录大小",
+      sizeLabelSaved: "已节省空间",
       migrate: "搬迁外存",
       restore: "恢复到系统",
       pathActions: {
@@ -285,6 +287,8 @@ const messages: Record<Locale, MessageTree> = {
         ready: "Ready to migrate"
       },
       sizeLabel: "Directory Size",
+      sizeLabelCurrent: "Directory Size",
+      sizeLabelSaved: "Space Saved",
       migrate: "Move to External",
       restore: "Restore to System",
       pathActions: {

@@ -23,6 +23,8 @@ pub struct RelocationRecord {
     pub health_state: String,
     pub last_error_code: Option<String>,
     pub trace_id: String,
+    pub source_size_bytes: i64,
+    pub target_size_bytes: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -266,7 +268,8 @@ impl Database {
         let mut stmt = connection.prepare(
             r#"
             SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
-                   state, health_state, last_error_code, trace_id, created_at, updated_at
+                   state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
+                   created_at, updated_at
             FROM relocations
             WHERE relocation_id = ?1
             LIMIT 1
@@ -282,7 +285,8 @@ impl Database {
         let mut stmt = connection.prepare(
             r#"
             SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
-                   state, health_state, last_error_code, trace_id, created_at, updated_at
+                   state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
+                   created_at, updated_at
             FROM relocations
             ORDER BY datetime(updated_at) DESC, rowid DESC
             "#,
@@ -301,7 +305,8 @@ impl Database {
         let mut stmt = connection.prepare(
             r#"
             SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
-                   state, health_state, last_error_code, trace_id, created_at, updated_at
+                   state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
+                   created_at, updated_at
             FROM relocations
             WHERE state IN (
               'PRECHECKING',
@@ -392,7 +397,8 @@ impl Database {
             r#"
             WITH ranked AS (
               SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
-                     state, health_state, last_error_code, trace_id, created_at, updated_at,
+                     state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
+                     created_at, updated_at,
                      ROW_NUMBER() OVER (
                        PARTITION BY app_id
                        ORDER BY datetime(updated_at) DESC, rowid DESC
@@ -401,7 +407,8 @@ impl Database {
               WHERE state IN ('HEALTHY', 'DEGRADED', 'BROKEN')
             )
             SELECT relocation_id, app_id, mode, source_path, target_root, target_path, backup_path,
-                   state, health_state, last_error_code, trace_id, created_at, updated_at
+                   state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
+                   created_at, updated_at
             FROM ranked
             WHERE rank_latest = 1
             ORDER BY datetime(updated_at) DESC
@@ -589,8 +596,10 @@ fn row_to_relocation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RelocationReco
         health_state: row.get(8)?,
         last_error_code: row.get(9)?,
         trace_id: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        source_size_bytes: row.get(11)?,
+        target_size_bytes: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
     })
 }
 

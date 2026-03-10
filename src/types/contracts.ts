@@ -94,6 +94,8 @@ export interface RelocationSummary {
   health_state: string;
   source_path: string;
   target_path: string;
+  source_size_bytes?: number;
+  target_size_bytes?: number;
   updated_at: string;
 }
 

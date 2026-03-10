@@ -30,6 +30,8 @@ const AppListStub = defineComponent({
       <div data-test="first-app-path">{{ apps[0]?.path || '' }}</div>
       <div data-test="first-app-desc">{{ apps[0]?.desc || '' }}</div>
       <div data-test="first-app-icon">{{ apps[0]?.icon || '' }}</div>
+      <div data-test="first-app-size">{{ apps[0]?.size || '' }}</div>
+      <div data-test="first-app-size-label">{{ apps[0]?.sizeLabel || '' }}</div>
       <button data-test="emit-refresh" @click="$emit('refresh')">refresh</button>
       <button data-test="emit-migrate" @click="$emit('migrate', 'wechat-non-mas')">migrate</button>
       <button data-test="emit-restore" @click="$emit('restore', 'wechat-non-mas')">restore</button>
@@ -202,6 +204,61 @@ describe("App", () => {
     expect(wrapper.get('[data-test="dialog-state"]').text()).toBe("closed");
     expect(wrapper.text()).toContain("done-message");
     expect(invokeMock.mock.calls.filter(([name]) => name === "scan_apps").length).toBeGreaterThan(1);
+  });
+
+  it("uses relocation size as fallback for migrated symlink paths", async () => {
+    invokeMock.mockImplementation(
+      makeInvokeMock({
+        scanApps: [
+          {
+            app_id: "wechat-non-mas",
+            display_name: "WeChat",
+            icon_path: null,
+            icon_data_url: null,
+            availability: "active",
+            detected_paths: [
+              {
+                path: "/Users/test/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
+                exists: true,
+                is_symlink: true,
+                size_bytes: 0
+              }
+            ],
+            running: false,
+            allow_bootstrap_if_source_missing: false,
+            last_verified_at: "2026-03-06T10:00:00Z"
+          }
+        ],
+        listRelocations: [
+          {
+            relocation_id: "reloc_size_001",
+            app_id: "wechat-non-mas",
+            state: "HEALTHY",
+            health_state: "healthy",
+            source_path: "/Users/test/source",
+            target_path: "/Volumes/M4_Ext_SSD/AppData/WeChat/xwechat_files",
+            source_size_bytes: 2048,
+            target_size_bytes: 2048,
+            updated_at: "2026-03-06T10:00:00Z"
+          }
+        ]
+      })
+    );
+
+    const wrapper = mount(App, {
+      global: {
+        stubs: {
+          AppListView: AppListStub,
+          MigrationDialog: MigrationDialogStub,
+          HealthPanelView: HealthPanelStub,
+          OperationLogExportView: LogPanelStub
+        }
+      }
+    });
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="first-app-size"]').text()).toBe("2.0 KB");
+    expect(wrapper.get('[data-test="first-app-size-label"]').text()).toContain("已节省空间");
   });
 
   it("shows rollback record missing when relocation record does not exist", async () => {

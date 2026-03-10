@@ -10,6 +10,7 @@ interface AppCard {
   icon: string;
   iconPath: string | null;
   size: string;
+  sizeLabel?: string;
   isMigrated: boolean;
   targetDisk: string | null;
   path: string;
@@ -244,7 +245,7 @@ onBeforeUnmount(() => {
 
         <div class="text-right px-4">
           <div class="text-lg font-bold text-gray-700">{{ app.size }}</div>
-          <div class="text-xs text-gray-400">{{ t("appList.sizeLabel") }}</div>
+          <div class="text-xs text-gray-400">{{ app.sizeLabel || t("appList.sizeLabelCurrent") }}</div>
         </div>
 
         <div class="flex-shrink-0 border-l border-gray-100 pl-5">

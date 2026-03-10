@@ -834,6 +834,26 @@ fn directory_size(path: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
+fn scan_path_size(path: &Path, metadata: &fs::Metadata) -> u64 {
+    if !metadata.file_type().is_symlink() {
+        return directory_size(path).unwrap_or(0);
+    }
+
+    let target = match fs::read_link(path) {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
+    let resolved_target = if target.is_absolute() {
+        target
+    } else {
+        path.parent()
+            .map(|parent| parent.join(&target))
+            .unwrap_or(target)
+    };
+
+    directory_size(&resolved_target).unwrap_or(0)
+}
+
 fn check_source(
     mode: &str,
     source_path: &str,
@@ -1196,11 +1216,7 @@ pub fn scan_apps() -> Result<Vec<AppScanResult>, CommandError> {
                         Ok(metadata) => {
                             detected_any_path = true;
                             let is_symlink = metadata.file_type().is_symlink();
-                            let size_bytes = if is_symlink {
-                                0
-                            } else {
-                                directory_size(source).unwrap_or(0)
-                            };
+                            let size_bytes = scan_path_size(source, &metadata);
                             AppScanPath {
                                 unit_id: Some(unit.unit_id.clone()),
                                 display_name: Some(unit.display_name.clone()),
@@ -3179,6 +3195,8 @@ pub fn list_relocations(
             health_state: row.health_state,
             source_path: row.source_path,
             target_path: row.target_path,
+            source_size_bytes: row.source_size_bytes,
+            target_size_bytes: row.target_size_bytes,
             updated_at: row.updated_at,
         })
         .collect())
@@ -3879,5 +3897,23 @@ mod tests {
 
         let size = directory_size(&link).expect("calculate size");
         assert_eq!(size, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_path_size_reads_symlink_target_directory_size() {
+        use std::os::unix::fs as unix_fs;
+
+        let dir = tempdir().expect("create temp dir");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("create target dir");
+        fs::write(target.join("payload.txt"), b"hello").expect("write payload");
+
+        let link = dir.path().join("source-link");
+        unix_fs::symlink(&target, &link).expect("create symlink");
+        let metadata = fs::symlink_metadata(&link).expect("link metadata");
+
+        let size = scan_path_size(&link, &metadata);
+        assert!(size >= 5);
     }
 }

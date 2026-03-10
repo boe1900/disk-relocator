@@ -38,6 +38,25 @@
           "allow_bootstrap_if_source_missing": true
         }
       ]
+    },
+    {
+      "app_id": "telegram-desktop",
+      "display_name": "Telegram Desktop",
+      "description_i18n": {
+        "zh": "迁移 Telegram Desktop 主数据目录。",
+        "en": "Migrate Telegram Desktop main data directory."
+      },
+      "bundle_ids": ["ru.keepcoder.Telegram"],
+      "process_names": ["Telegram"],
+      "units": [
+        {
+          "unit_id": "main-data",
+          "display_name": "Telegram Desktop Data",
+          "category": "app-data",
+          "source_path": "~/Library/Application Support/Telegram Desktop",
+          "target_path_template": "{target_root}/AppData/Telegram Desktop"
+        }
+      ]
     }
   ]
 }
