@@ -52,7 +52,6 @@ Disk Relocator 是一个基于 Vue 3 + Tauri + Rust 的 macOS 桌面工具，用
 
 发布工作流会自动执行 `npm run check:release`，并上传：
 - `.dmg` 安装包
-- `app-profiles.json`（与该版本二进制绑定）
 
 ## 使用流程（用户视角）
 

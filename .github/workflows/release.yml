@@ -282,35 +282,11 @@ jobs:
           fi
           printf '%s\n' "${files[@]}"
 
-      - name: Prepare app profiles asset
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp "specs/v1/app-profiles.json" "app-profiles.json"
-
-      - name: Upload app profiles asset to GitHub release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh release upload "${{ needs.prepare.outputs.tag }}" \
-            "app-profiles.json" \
-            --clobber
-
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: disk-relocator-${{ needs.prepare.outputs.tag }}-dmg-aarch64
           path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          if-no-files-found: error
-
-      - name: Upload profiles workflow artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: disk-relocator-${{ needs.prepare.outputs.tag }}-profiles
-          path: |
-            app-profiles.json
           if-no-files-found: error
 
       - name: Publish summary
@@ -325,5 +301,4 @@ jobs:
             echo "- prerelease: \`${{ needs.prepare.outputs.prerelease }}\`"
             echo "- sign and notarize: \`${{ needs.prepare.outputs.sign_and_notarize }}\`"
             echo "- release url: ${{ steps.tauri_signed.outputs.releaseHtmlUrl || steps.tauri_unsigned.outputs.releaseHtmlUrl }}"
-            echo "- app-profiles asset: \`app-profiles.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
