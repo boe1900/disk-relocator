@@ -206,7 +206,7 @@ describe("App", () => {
     expect(invokeMock.mock.calls.filter(([name]) => name === "scan_apps").length).toBeGreaterThan(1);
   });
 
-  it("uses relocation size as fallback for migrated symlink paths", async () => {
+  it("uses scanned zero size for existing migrated symlink paths", async () => {
     invokeMock.mockImplementation(
       makeInvokeMock({
         scanApps: [
@@ -257,7 +257,7 @@ describe("App", () => {
     });
     await flushPromises();
 
-    expect(wrapper.get('[data-test="first-app-size"]').text()).toBe("2.0 KB");
+    expect(wrapper.get('[data-test="first-app-size"]').text()).toBe("0 B");
     expect(wrapper.get('[data-test="first-app-size-label"]').text()).toContain("已节省空间");
   });
 

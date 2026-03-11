@@ -136,6 +136,7 @@ const appCards = computed<AppCard[]>(() => {
     const consideredPaths = hasExecutableUnit ? executablePaths : app.detected_paths;
     const existingPaths = consideredPaths.filter((path) => path.exists);
     const scannedSizeBytes = existingPaths.reduce((sum, path) => sum + path.size_bytes, 0);
+    const hasScannedPaths = existingPaths.length > 0;
     const isMigrated = hasExecutableUnit
       ? executablePaths.every((path) => path.exists && path.is_symlink)
       : existingPaths.some((path) => path.is_symlink);
@@ -150,7 +151,7 @@ const appCards = computed<AppCard[]>(() => {
     const description = localizedDescription?.trim() || null;
     const relocation = latestRelocation.get(app.app_id);
     const estimatedSavedBytes = relocationSavedBytes.get(app.app_id) ?? 0;
-    const sizeBytes = scannedSizeBytes > 0 ? scannedSizeBytes : isMigrated ? estimatedSavedBytes : 0;
+    const sizeBytes = hasScannedPaths ? scannedSizeBytes : isMigrated ? estimatedSavedBytes : 0;
     const sizeLabel = isMigrated ? t("appList.sizeLabelSaved") : t("appList.sizeLabelCurrent");
 
     cards.push({
