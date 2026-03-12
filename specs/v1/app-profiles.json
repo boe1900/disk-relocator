@@ -1,6 +1,6 @@
 {
   "schema_version": "2.1.0",
-  "updated_at": "2026-03-09",
+  "updated_at": "2026-03-12",
   "engine_defaults": {
     "app_level": {
       "availability": "active",
@@ -55,6 +55,26 @@
           "category": "media",
           "source_path": "~/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram",
           "target_path_template": "{target_root}/AppData/Telegram_Native",
+          "allow_bootstrap_if_source_missing": false
+        }
+      ]
+    },
+    {
+      "app_id": "dingtalk",
+      "display_name": "钉钉 (DingTalk)",
+      "description_i18n": {
+        "zh": "迁移钉钉核心数据与下载文件目录。",
+        "en": "Migrate DingTalk core data and downloaded files directory."
+      },
+      "bundle_ids": ["com.alibaba.DingTalkMac"],
+      "process_names": ["DingTalk"],
+      "units": [
+        {
+          "unit_id": "dingtalk-data",
+          "display_name": "核心数据与下载文件",
+          "category": "app-data",
+          "source_path": "~/Library/Application Support/DingTalkMac",
+          "target_path_template": "{target_root}/AppData/DingTalk/ApplicationSupport",
           "allow_bootstrap_if_source_missing": false
         }
       ]

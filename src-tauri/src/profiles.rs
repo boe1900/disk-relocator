@@ -520,6 +520,47 @@ mod tests {
     }
 
     #[test]
+    fn dingtalk_profile_has_expected_bundle_process_and_unit_paths() {
+        let profile = profile_by_id("dingtalk")
+            .expect("load profiles")
+            .expect("dingtalk profile should exist");
+        assert_eq!(profile.availability, "active");
+        assert!(
+            profile
+                .bundle_ids
+                .contains(&"com.alibaba.DingTalkMac".to_string()),
+            "dingtalk profile should contain bundle id com.alibaba.DingTalkMac"
+        );
+        assert!(
+            profile.process_names.contains(&"DingTalk".to_string()),
+            "dingtalk profile should contain process name DingTalk"
+        );
+
+        let unit = profile
+            .relocation_units
+            .iter()
+            .find(|unit| unit.unit_id == "dingtalk-data" && unit.enabled)
+            .expect("dingtalk profile should contain enabled dingtalk-data unit");
+
+        assert_eq!(
+            unit.source_path, "~/Library/Application Support/DingTalkMac",
+            "dingtalk-data unit source path should match profile spec"
+        );
+        assert_eq!(
+            unit.target_path_template, "{target_root}/AppData/DingTalk/ApplicationSupport",
+            "dingtalk-data unit target path template should match profile spec"
+        );
+        assert!(
+            !unit.allow_bootstrap_if_source_missing,
+            "dingtalk-data unit should not allow bootstrap when source is missing"
+        );
+        assert!(
+            !profile.precheck_rules.allow_bootstrap_if_source_missing,
+            "dingtalk profile precheck should not allow bootstrap when source is missing"
+        );
+    }
+
+    #[test]
     fn active_profiles_require_enabled_units_and_valid_paths() {
         let profiles = list_profiles().expect("load profiles");
         for profile in profiles {
