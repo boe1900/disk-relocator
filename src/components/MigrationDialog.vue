@@ -21,7 +21,6 @@ interface SourceSummary {
   path: string;
   unitId: string | null;
   unitLabel: string;
-  defaultEnabled: boolean;
   enabled: boolean;
   riskLevel: string;
   requiresConfirmation: boolean;
@@ -37,9 +36,9 @@ interface MigrationPlanItem {
   sourcePath: string;
   sourceSizeBytes: number;
   mode: MigrateRequest["mode"];
+  alreadyMigrated: boolean;
   execute: boolean;
   reason: string;
-  defaultSelected: boolean;
   requiresConfirmation: boolean;
 }
 
@@ -66,8 +65,8 @@ const loading = ref(false);
 const selectingTargetRoot = ref(false);
 const error = ref<string | null>(null);
 const successResults = ref<RelocationResult[]>([]);
-const selectedPlanKeys = ref<string[]>([]);
 const copiedPathKey = ref<string | null>(null);
+const activePlanGroupKey = ref("");
 
 let progressTimer: number | null = null;
 let copyFeedbackTimer: number | null = null;
@@ -150,6 +149,13 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+function createBatchTraceId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `tr_batch_${crypto.randomUUID()}`;
+  }
+  return `tr_batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function normalizeDetectedPaths(app: AppScanResult): AppScanPath[] {
   const paths = app.detected_paths ?? [];
   if (paths.length > 0) {
@@ -197,7 +203,6 @@ function summarizeSource(app: AppScanResult, path: AppScanPath, index: number): 
     path: path.path ?? "",
     unitId: path.unit_id?.trim() || null,
     unitLabel: resolveUnitLabel(app, path, index),
-    defaultEnabled: path.default_enabled !== false && enabled,
     enabled,
     riskLevel,
     requiresConfirmation:
@@ -231,7 +236,7 @@ function buildPlanItem(app: AppScanResult, path: AppScanPath, index: number): Mi
     sourcePath: source.path,
     sourceSizeBytes: source.sizeBytes,
     mode,
-    defaultSelected: source.defaultEnabled,
+    alreadyMigrated: false,
     requiresConfirmation: source.requiresConfirmation
   };
 
@@ -248,7 +253,7 @@ function buildPlanItem(app: AppScanResult, path: AppScanPath, index: number): Mi
     return { ...base, execute: false, reason: source.blockedReason };
   }
   if (source.exists && source.hasSymlink) {
-    return { ...base, execute: false, reason: t("migrationDialog.reason.migrated") };
+    return { ...base, alreadyMigrated: true, execute: false, reason: t("migrationDialog.reason.migrated") };
   }
   if (!source.exists && !source.allowBootstrapIfSourceMissing) {
     return { ...base, execute: false, reason: t("migrationDialog.reason.sourceMissingNoData") };
@@ -262,16 +267,26 @@ function buildPlanItem(app: AppScanResult, path: AppScanPath, index: number): Mi
   return { ...base, execute: true, reason: t("migrationDialog.reason.sourceDetected") };
 }
 
-function defaultSelectedPlanKeys(items: MigrationPlanItem[]): string[] {
-  const executable = items.filter((item) => item.execute);
-  if (executable.length === 0) {
-    return [];
+function planGroupKey(item: MigrationPlanItem): string {
+  const unitId = item.unitId?.trim();
+  if (!unitId) {
+    return "__default__";
   }
-  const preferred = executable.filter((item) => item.defaultSelected);
-  if (preferred.length > 0) {
-    return preferred.map((item) => item.key);
+  const segments = unitId
+    .split("::")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length < 2) {
+    return "__default__";
   }
-  return executable.map((item) => item.key);
+  return segments[1];
+}
+
+function planGroupLabel(key: string): string {
+  if (key === "__default__") {
+    return t("migrationDialog.pathGroup.default");
+  }
+  return t("migrationDialog.pathGroup.account", { account: key });
 }
 
 const candidateDisks = computed(() =>
@@ -287,14 +302,64 @@ const migrationPlan = computed<MigrationPlanItem[]>(() => {
   );
 });
 
-const executablePlan = computed(() => migrationPlan.value.filter((item) => item.execute));
-const skippedPlan = computed(() => migrationPlan.value.filter((item) => !item.execute));
-const selectedExecutablePlan = computed(() => {
-  const selected = new Set(selectedPlanKeys.value);
-  return executablePlan.value.filter((item) => selected.has(item.key));
+const displayMigrationPlan = computed(() =>
+  migrationPlan.value.filter((item) => !item.alreadyMigrated)
+);
+
+const migrationPlanGroups = computed(() => {
+  const grouped = new Map<string, MigrationPlanItem[]>();
+  for (const item of displayMigrationPlan.value) {
+    const key = planGroupKey(item);
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(item);
+    grouped.set(key, bucket);
+  }
+
+  const groups = Array.from(grouped.entries()).map(([key, items]) => ({
+    key,
+    label: planGroupLabel(key),
+    items
+  }));
+  groups.sort((left, right) => {
+    if (left.key === "__default__") {
+      return -1;
+    }
+    if (right.key === "__default__") {
+      return 1;
+    }
+    return left.label.localeCompare(right.label);
+  });
+  return groups;
 });
+
+const showPlanGroupTabs = computed(
+  () => migrationPlanGroups.value.filter((group) => group.key !== "__default__").length > 1
+);
+
+const visibleMigrationPlan = computed(() => {
+  if (!showPlanGroupTabs.value) {
+    return displayMigrationPlan.value;
+  }
+  if (!activePlanGroupKey.value) {
+    return [];
+  }
+  return displayMigrationPlan.value.filter((item) => planGroupKey(item) === activePlanGroupKey.value);
+});
+
+const executablePlan = computed(() => migrationPlan.value.filter((item) => item.execute));
+const visibleExecutablePlan = computed(() => visibleMigrationPlan.value.filter((item) => item.execute));
+const skippedPlan = computed(
+  () => migrationPlan.value.filter((item) => !item.execute && !item.alreadyMigrated)
+);
+const selectedExecutablePlan = computed(() => executablePlan.value);
 const needsRiskConfirmation = computed(() =>
   selectedExecutablePlan.value.some((item) => item.requiresConfirmation)
+);
+const unitHintSelectedCount = computed(() =>
+  showPlanGroupTabs.value ? visibleExecutablePlan.value.length : selectedExecutablePlan.value.length
+);
+const unitHintTotalCount = computed(() =>
+  showPlanGroupTabs.value ? visibleExecutablePlan.value.length : executablePlan.value.length
 );
 
 const targetRootOptions = computed(() => {
@@ -362,8 +427,8 @@ function resetDialogState(): void {
   loading.value = false;
   error.value = null;
   successResults.value = [];
-  selectedPlanKeys.value = defaultSelectedPlanKeys(migrationPlan.value);
   copiedPathKey.value = null;
+  activePlanGroupKey.value = "";
   stopCopyFeedbackTimer();
 
   const defaultDisk = candidateDisks.value[0]?.mount_point ?? "";
@@ -382,15 +447,20 @@ watch(
 );
 
 watch(
-  () => [props.showModal, migrationPlan.value.map((item) => item.key).join("|")],
+  () => [props.showModal, showPlanGroupTabs.value, migrationPlanGroups.value.map((group) => group.key).join("|")],
   ([show]) => {
     if (!show) {
       return;
     }
-    const validKeys = new Set(migrationPlan.value.map((item) => item.key));
-    selectedPlanKeys.value = selectedPlanKeys.value.filter((key) => validKeys.has(key));
-    if (selectedPlanKeys.value.length === 0) {
-      selectedPlanKeys.value = defaultSelectedPlanKeys(migrationPlan.value);
+    if (!showPlanGroupTabs.value) {
+      activePlanGroupKey.value = "";
+      return;
+    }
+    const keys = migrationPlanGroups.value
+      .filter((group) => group.key !== "__default__")
+      .map((group) => group.key);
+    if (!keys.includes(activePlanGroupKey.value)) {
+      activePlanGroupKey.value = keys[0] ?? "";
     }
   },
   { immediate: true }
@@ -424,24 +494,6 @@ function startProgressAnimation(): void {
 function onSelectDisk(mountPoint: string): void {
   targetDiskMount.value = mountPoint;
   targetRoot.value = mountPoint;
-}
-
-function onSelectAllUnits(): void {
-  selectedPlanKeys.value = executablePlan.value.map((item) => item.key);
-}
-
-function onClearUnits(): void {
-  selectedPlanKeys.value = [];
-}
-
-function onToggleUnit(key: string, checked: boolean): void {
-  const current = new Set(selectedPlanKeys.value);
-  if (checked) {
-    current.add(key);
-  } else {
-    current.delete(key);
-  }
-  selectedPlanKeys.value = Array.from(current);
 }
 
 async function onCopyPath(item: MigrationPlanItem): Promise<void> {
@@ -523,6 +575,7 @@ async function onStartMigration(): Promise<void> {
   migrationStep.value = 1;
   progress.value = 5;
   startProgressAnimation();
+  const batchTraceId = createBatchTraceId();
 
   const results: RelocationResult[] = [];
   try {
@@ -532,6 +585,7 @@ async function onStartMigration(): Promise<void> {
         app_id: item.app.app_id,
         target_root: targetRoot.value.trim(),
         mode: item.mode,
+        trace_id: batchTraceId,
         confirm_high_risk: confirmHighRisk.value,
         cleanup_backup_after_migrate: cleanupBackupAfterMigrate.value
       };
@@ -561,9 +615,12 @@ async function onStartMigration(): Promise<void> {
 }
 
 function onFinish(): void {
-  const names = successResults.value.map((item) => item.app_id).join(" / ");
-  const label =
-    names.length > 0 ? names : props.selectedApp?.display_name ?? t("migrationDialog.fallbackLabel");
+  const uniqueAppIds = Array.from(
+    new Set(successResults.value.map((item) => item.app_id).filter((value) => value.trim().length > 0))
+  );
+  const preferredLabel = props.selectedApp?.display_name?.trim() || "";
+  const fallbackIds = uniqueAppIds.join(" / ");
+  const label = preferredLabel || fallbackIds || t("migrationDialog.fallbackLabel");
   emit("done", t("migrationDialog.doneMessage", { label }));
 }
 
@@ -610,81 +667,67 @@ onBeforeUnmount(() => {
               <div class="text-xs text-gray-500">
                 {{
                   t("migrationDialog.unitHint", {
-                    selected: selectedExecutablePlan.length,
-                    total: executablePlan.length
+                    selected: unitHintSelectedCount,
+                    total: unitHintTotalCount
                   })
                 }}
               </div>
             </div>
-            <div class="flex items-center gap-2 mb-2">
+            <div v-if="showPlanGroupTabs" class="mb-2 flex items-center gap-2 overflow-x-auto">
               <button
-                type="button"
-                :disabled="loading || executablePlan.length === 0"
-                @click="onSelectAllUnits"
-                class="px-2 py-1 rounded border border-gray-200 text-xs text-gray-600 hover:bg-gray-100 disabled:text-gray-400 disabled:border-gray-100"
+                v-for="group in migrationPlanGroups.filter((item) => item.key !== '__default__')"
+                :key="group.key"
+                :class="`px-3 py-1.5 rounded-lg text-xs whitespace-nowrap border ${
+                  activePlanGroupKey === group.key
+                    ? 'bg-blue-500 text-white border-blue-500'
+                    : 'bg-white text-gray-700 border-gray-200 hover:border-blue-300'
+                }`"
+                @click="activePlanGroupKey = group.key"
               >
-                {{ t("migrationDialog.selectAllUnits") }}
-              </button>
-              <button
-                type="button"
-                :disabled="loading || selectedPlanKeys.length === 0"
-                @click="onClearUnits"
-                class="px-2 py-1 rounded border border-gray-200 text-xs text-gray-600 hover:bg-gray-100 disabled:text-gray-400 disabled:border-gray-100"
-              >
-                {{ t("migrationDialog.clearUnits") }}
+                {{ group.label }}
               </button>
             </div>
             <div class="space-y-2">
               <div
-                v-for="item in migrationPlan"
+                v-for="item in visibleMigrationPlan"
                 :key="item.key"
                 :class="`flex items-start justify-between gap-3 p-3 rounded-lg border ${item.execute ? 'bg-white border-gray-200' : 'bg-gray-100 border-gray-200'}`"
               >
-                <div class="flex items-start gap-3 min-w-0">
-                  <input
-                    type="checkbox"
-                    :checked="selectedPlanKeys.includes(item.key)"
-                    :disabled="loading || !item.execute"
-                    @change="onToggleUnit(item.key, ($event.target as HTMLInputElement).checked)"
-                    data-test="unit-checkbox"
-                    class="mt-0.5"
-                  />
-                  <div class="min-w-0">
-                    <div class="text-sm font-medium text-gray-800">{{ item.unitLabel }}</div>
-                    <div class="flex items-center gap-2 min-w-0">
-                      <div class="text-xs text-gray-500 font-mono truncate" :title="item.sourcePath || t('app.pathFallback')">
-                        {{ item.sourcePath || t("app.pathFallback") }}
-                      </div>
-                      <button
-                        type="button"
-                        data-test="open-path-btn"
-                        :disabled="loading || !(item.sourcePath || '').trim()"
-                        @pointerdown.stop.prevent
-                        @mousedown.stop.prevent
-                        @click.stop.prevent="onOpenInFinder(item)"
-                        class="text-xs text-gray-600 hover:text-gray-800 whitespace-nowrap disabled:text-gray-400"
-                      >
-                        {{ t("migrationDialog.openInFinder") }}
-                      </button>
-                      <button
-                        type="button"
-                        data-test="copy-path-btn"
-                        :disabled="loading || !(item.sourcePath || '').trim()"
-                        @pointerdown.stop.prevent
-                        @mousedown.stop.prevent
-                        @click.stop.prevent="onCopyPath(item)"
-                        class="text-xs text-blue-600 hover:text-blue-700 whitespace-nowrap disabled:text-gray-400"
-                      >
-                        {{
-                          copiedPathKey === item.key
-                            ? t("migrationDialog.pathCopied")
-                            : t("migrationDialog.copyPath")
-                        }}
-                      </button>
+                <div class="min-w-0">
+                  <div class="text-sm font-medium text-gray-800">{{ item.unitLabel }}</div>
+                  <div class="flex items-center gap-2 min-w-0">
+                    <div class="text-xs text-gray-500 font-mono truncate" :title="item.sourcePath || t('app.pathFallback')">
+                      {{ item.sourcePath || t("app.pathFallback") }}
                     </div>
-                    <div class="text-xs mt-1" :class="item.execute ? 'text-green-700' : 'text-gray-500'">
-                      {{ item.reason }}
-                    </div>
+                    <button
+                      type="button"
+                      data-test="open-path-btn"
+                      :disabled="loading || !(item.sourcePath || '').trim()"
+                      @pointerdown.stop.prevent
+                      @mousedown.stop.prevent
+                      @click.stop.prevent="onOpenInFinder(item)"
+                      class="text-xs text-gray-600 hover:text-gray-800 whitespace-nowrap disabled:text-gray-400"
+                    >
+                      {{ t("migrationDialog.openInFinder") }}
+                    </button>
+                    <button
+                      type="button"
+                      data-test="copy-path-btn"
+                      :disabled="loading || !(item.sourcePath || '').trim()"
+                      @pointerdown.stop.prevent
+                      @mousedown.stop.prevent
+                      @click.stop.prevent="onCopyPath(item)"
+                      class="text-xs text-blue-600 hover:text-blue-700 whitespace-nowrap disabled:text-gray-400"
+                    >
+                      {{
+                        copiedPathKey === item.key
+                          ? t("migrationDialog.pathCopied")
+                          : t("migrationDialog.copyPath")
+                      }}
+                    </button>
+                  </div>
+                  <div class="text-xs mt-1" :class="item.execute ? 'text-green-700' : 'text-gray-500'">
+                    {{ item.reason }}
                   </div>
                 </div>
                 <div class="text-xs text-gray-500 whitespace-nowrap">{{ formatBytes(item.sourceSizeBytes) }}</div>

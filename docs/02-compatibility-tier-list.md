@@ -11,11 +11,11 @@
   - `cautious`: 建议提示风险，可按产品策略要求确认
   - `high`: 必须配合 `requires_confirmation=true`
 
-## 2. 当前策略（2026-03-10）
+## 2. 当前策略（2026-03-12）
 
 | 应用/数据类型 | 迁移单元（unit） | 处理策略 | 说明 |
 |---|---|---|---|
-| WeChat（非 MAS）数据目录 | `xwechat_files` | `active` + `stable` | 当前仅保留此单元并整体迁移 |
+| WeChat（非 MAS）聊天媒体目录 | `wechat-msg-all` | `active` + `stable` | 按账号目录通配展开，仅迁移 `msg` 目录 |
 
 ## 3. 画像最小要素
 
@@ -43,11 +43,11 @@
   "process_names": ["WeChat"],
   "units": [
     {
-      "unit_id": "xwechat-files",
-      "display_name": "xwechat_files",
+      "unit_id": "wechat-msg-all",
+      "display_name": "聊天媒体资源库 (含图片/视频/文件)",
       "category": "media",
-      "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
-      "target_path_template": "{target_root}/AppData/WeChat/xwechat_files",
+      "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/*/msg",
+      "target_path_template": "{target_root}/AppData/WeChat/{match_1}/msg",
       "risk_level": "stable",
       "requires_confirmation": false
     }

@@ -183,6 +183,33 @@ fn trim_or_empty(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_string()
 }
 
+fn contains_glob_meta(segment: &str) -> bool {
+    segment.contains('*') || segment.contains('?') || segment.contains('[')
+}
+
+fn first_match_placeholder(template: &str) -> Option<String> {
+    const PREFIX: &str = "{match_";
+    let mut search_from = 0usize;
+
+    while let Some(offset) = template[search_from..].find(PREFIX) {
+        let begin = search_from + offset;
+        let mut cursor = begin + PREFIX.len();
+        let bytes = template.as_bytes();
+
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+
+        if cursor > begin + PREFIX.len() && cursor < bytes.len() && bytes[cursor] == b'}' {
+            return Some(template[begin..=cursor].to_string());
+        }
+
+        search_from = begin + PREFIX.len();
+    }
+
+    None
+}
+
 fn normalize_availability(raw: &RawAppProfile, default_availability: &str) -> String {
     let availability = trim_or_empty(&raw.availability).to_ascii_lowercase();
     if !availability.is_empty() {
@@ -415,6 +442,31 @@ fn validate_profiles(profiles: &[AppProfile]) -> Result<(), String> {
                 ));
             }
 
+            let wildcard_count = unit
+                .source_path
+                .split('/')
+                .filter(|segment| contains_glob_meta(segment))
+                .count();
+            if unit.enabled && wildcard_count == 0 {
+                if let Some(placeholder) = first_match_placeholder(&unit.target_path_template) {
+                    return Err(format!(
+                        "profile {} unit {} source_path has no wildcard segment but target_path_template contains {}",
+                        profile.app_id, unit.unit_id, placeholder
+                    ));
+                }
+            }
+            if unit.enabled && wildcard_count > 0 {
+                for capture_index in 1..=wildcard_count {
+                    let placeholder = format!("{{match_{capture_index}}}");
+                    if !unit.target_path_template.contains(&placeholder) {
+                        return Err(format!(
+                            "profile {} unit {} source_path has {} wildcard segment(s) but target_path_template misses {}",
+                            profile.app_id, unit.unit_id, wildcard_count, placeholder
+                        ));
+                    }
+                }
+            }
+
             let risk = unit.risk_level.trim().to_ascii_lowercase();
             if !matches!(risk.as_str(), "stable" | "cautious" | "high") {
                 return Err(format!(
@@ -508,14 +560,21 @@ mod tests {
         );
         assert!(
             profile.precheck_rules.allow_bootstrap_if_source_missing,
-            "wechat profile should allow bootstrap for xwechat-files unit when source is missing"
+            "wechat profile should allow bootstrap for wechat-msg-all unit when source is missing"
         );
-        assert!(
-            profile
-                .relocation_units
-                .iter()
-                .any(|unit| unit.unit_id == "xwechat-files" && unit.enabled),
-            "wechat profile should contain enabled xwechat-files unit"
+        let unit = profile
+            .relocation_units
+            .iter()
+            .find(|unit| unit.unit_id == "wechat-msg-all" && unit.enabled)
+            .expect("wechat profile should contain enabled wechat-msg-all unit");
+        assert_eq!(
+            unit.source_path,
+            "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/*/msg",
+            "wechat media unit source path should match wildcard profile spec"
+        );
+        assert_eq!(
+            unit.target_path_template, "{target_root}/AppData/WeChat/{match_1}/msg",
+            "wechat media unit target path template should include match placeholder"
         );
     }
 
@@ -536,24 +595,76 @@ mod tests {
             "dingtalk profile should contain process name DingTalk"
         );
 
-        let unit = profile
-            .relocation_units
-            .iter()
-            .find(|unit| unit.unit_id == "dingtalk-data" && unit.enabled)
-            .expect("dingtalk profile should contain enabled dingtalk-data unit");
+        let expected_units = vec![
+            (
+                "dingtalk-web-image",
+                "media",
+                "~/Library/Application Support/DingTalkMac/*/ImageFiles",
+                "{target_root}/AppData/DingTalk/{match_1}/ImageFiles",
+            ),
+            (
+                "dingtalk-web-video",
+                "media",
+                "~/Library/Application Support/DingTalkMac/*/VideoFiles",
+                "{target_root}/AppData/DingTalk/{match_1}/VideoFiles",
+            ),
+            (
+                "dingtalk-web-audio",
+                "media",
+                "~/Library/Application Support/DingTalkMac/*/AudioFiles",
+                "{target_root}/AppData/DingTalk/{match_1}/AudioFiles",
+            ),
+            (
+                "dingtalk-web-emotion",
+                "media",
+                "~/Library/Application Support/DingTalkMac/*/GifEmotionFiles",
+                "{target_root}/AppData/DingTalk/{match_1}/GifEmotionFiles",
+            ),
+            (
+                "dingtalk-web-eapp-download",
+                "cache",
+                "~/Library/Application Support/DingTalkMac/*/EAppFiles/download",
+                "{target_root}/AppData/DingTalk/{match_1}/EAppFiles/download",
+            ),
+            (
+                "dingtalk-web-eapp-unziped",
+                "cache",
+                "~/Library/Application Support/DingTalkMac/*/EAppFiles/unziped",
+                "{target_root}/AppData/DingTalk/{match_1}/EAppFiles/unziped",
+            ),
+        ];
 
         assert_eq!(
-            unit.source_path, "~/Library/Application Support/DingTalkMac",
-            "dingtalk-data unit source path should match profile spec"
+            profile.relocation_units.len(),
+            expected_units.len(),
+            "dingtalk profile should include all expected migration units"
         );
-        assert_eq!(
-            unit.target_path_template, "{target_root}/AppData/DingTalk/ApplicationSupport",
-            "dingtalk-data unit target path template should match profile spec"
-        );
-        assert!(
-            !unit.allow_bootstrap_if_source_missing,
-            "dingtalk-data unit should not allow bootstrap when source is missing"
-        );
+
+        for (unit_id, category, source_path, target_path_template) in expected_units {
+            let unit = profile
+                .relocation_units
+                .iter()
+                .find(|unit| unit.unit_id == unit_id && unit.enabled)
+                .unwrap_or_else(|| panic!("dingtalk profile should contain enabled {unit_id}"));
+
+            assert_eq!(
+                unit.category, category,
+                "{unit_id} unit category should match profile spec"
+            );
+            assert_eq!(
+                unit.source_path, source_path,
+                "{unit_id} unit source path should match profile spec"
+            );
+            assert_eq!(
+                unit.target_path_template, target_path_template,
+                "{unit_id} unit target path template should match profile spec"
+            );
+            assert!(
+                !unit.allow_bootstrap_if_source_missing,
+                "{unit_id} unit should not allow bootstrap when source is missing"
+            );
+        }
+
         assert!(
             !profile.precheck_rules.allow_bootstrap_if_source_missing,
             "dingtalk profile precheck should not allow bootstrap when source is missing"
@@ -602,5 +713,158 @@ mod tests {
     fn profile_by_id_returns_none_for_unknown_app() {
         let unknown = profile_by_id("not-exist-app-id").expect("load profiles");
         assert!(unknown.is_none());
+    }
+
+    #[test]
+    fn wildcard_source_requires_all_match_placeholders_in_target_template() {
+        let payload = r#"
+        {
+          "profiles": [
+            {
+              "app_id": "demo",
+              "display_name": "Demo",
+              "units": [
+                {
+                  "unit_id": "demo-media",
+                  "source_path": "~/Library/Demo/*/msg/*",
+                  "target_path_template": "{target_root}/AppData/Demo/{match_1}/msg"
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let err = parse_profile_set(payload, "test profile payload")
+            .expect_err("missing wildcard placeholders should be rejected");
+        assert!(
+            err.contains("target_path_template misses {match_2}"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn wildcard_source_accepts_target_template_with_all_match_placeholders() {
+        let payload = r#"
+        {
+          "profiles": [
+            {
+              "app_id": "demo",
+              "display_name": "Demo",
+              "units": [
+                {
+                  "unit_id": "demo-media",
+                  "source_path": "~/Library/Demo/*/msg/*",
+                  "target_path_template": "{target_root}/AppData/Demo/{match_1}/msg/{match_2}"
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let parsed = parse_profile_set(payload, "test profile payload")
+            .expect("all wildcard placeholders should pass validation");
+        let profile = parsed
+            .profiles
+            .iter()
+            .find(|profile| profile.app_id == "demo")
+            .expect("demo profile should exist");
+        assert_eq!(profile.relocation_units.len(), 1);
+        assert_eq!(
+            profile.relocation_units[0].target_path_template,
+            "{target_root}/AppData/Demo/{match_1}/msg/{match_2}"
+        );
+    }
+
+    #[test]
+    fn segment_glob_source_requires_match_placeholder_in_target_template() {
+        let payload = r#"
+        {
+          "profiles": [
+            {
+              "app_id": "qq",
+              "display_name": "QQ",
+              "units": [
+                {
+                  "unit_id": "qq-msg-all",
+                  "source_path": "~/Library/QQ/nt_qq_*/msg",
+                  "target_path_template": "{target_root}/AppData/QQ/msg"
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let err = parse_profile_set(payload, "test profile payload")
+            .expect_err("segment glob without match placeholder should be rejected");
+        assert!(
+            err.contains("target_path_template misses {match_1}"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn non_wildcard_source_rejects_match_placeholder_in_target_template() {
+        let payload = r#"
+        {
+          "profiles": [
+            {
+              "app_id": "demo",
+              "display_name": "Demo",
+              "units": [
+                {
+                  "unit_id": "demo-media",
+                  "source_path": "~/Library/Demo/msg",
+                  "target_path_template": "{target_root}/AppData/Demo/{match_1}/msg"
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let err = parse_profile_set(payload, "test profile payload")
+            .expect_err("non-wildcard source should reject match placeholders");
+        assert!(
+            err.contains("source_path has no wildcard segment"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("{match_1}"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn non_wildcard_source_accepts_template_without_match_placeholder() {
+        let payload = r#"
+        {
+          "profiles": [
+            {
+              "app_id": "demo",
+              "display_name": "Demo",
+              "units": [
+                {
+                  "unit_id": "demo-media",
+                  "source_path": "~/Library/Demo/msg",
+                  "target_path_template": "{target_root}/AppData/Demo/msg"
+                }
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let parsed = parse_profile_set(payload, "test profile payload")
+            .expect("non-wildcard source without match placeholder should pass validation");
+        let profile = parsed
+            .profiles
+            .iter()
+            .find(|profile| profile.app_id == "demo")
+            .expect("demo profile should exist");
+        assert_eq!(profile.relocation_units.len(), 1);
+        assert_eq!(
+            profile.relocation_units[0].target_path_template,
+            "{target_root}/AppData/Demo/msg"
+        );
     }
 }

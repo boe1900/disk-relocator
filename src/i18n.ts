@@ -16,6 +16,7 @@ const messages: Record<Locale, MessageTree> = {
       language: "语言",
       cancelled: "取消",
       confirm: "确认",
+      close: "关闭",
       refresh: "刷新",
       refreshing: "刷新中..."
     },
@@ -41,6 +42,7 @@ const messages: Record<Locale, MessageTree> = {
       messages: {
         loadFailed: "数据加载失败：{error}",
         restoreConfirm: "确定要将 {name} 的数据恢复到系统盘吗？",
+        restoreBlockedRunning: "{name} 正在运行，请先完全退出后再恢复到系统盘。",
         rollbackRecordMissing: "未找到 {name} 的回滚记录。",
         restoreDone: "{name} 已回滚到系统盘。",
         restoreFailed: "回滚失败：{error}",
@@ -67,7 +69,7 @@ const messages: Record<Locale, MessageTree> = {
         blockedWithReason: "当前画像被阻断：{reason}",
         deprecated: "当前画像已弃用，默认不支持新迁移",
         noExecutableUnit: "当前没有可迁移的数据单元",
-        running: "应用正在运行，请先完全退出再迁移",
+        running: "应用正在运行，请先完全退出后再执行迁移/恢复",
         requiresConfirmation: "包含需确认的数据单元，迁移前请确认风险",
         migrated: "已检测到软链接迁移状态",
         ready: "可直接迁移"
@@ -75,14 +77,30 @@ const messages: Record<Locale, MessageTree> = {
       sizeLabel: "目录大小",
       sizeLabelCurrent: "目录大小",
       sizeLabelSaved: "已节省空间",
+      pathCount: "{count} 个目录",
+      pathGroup: {
+        default: "默认目录",
+        account: "账号 {account}"
+      },
       migrate: "搬迁外存",
       restore: "恢复到系统",
       pathActions: {
         openInFinder: "在 Finder 打开",
         copyPath: "复制路径",
+        viewDetails: "查看目录详情",
+        pendingBadge: "待迁移 {count}",
         copied: "已复制",
         openFailed: "在 Finder 打开失败：{error}",
         copyFailed: "复制路径失败：{error}"
+      },
+      pathStatus: {
+        migrated: "已迁移",
+        pending: "未迁移"
+      },
+      pathDetails: {
+        title: "{name} 目录详情",
+        subtitle: "共 {count} 个目录",
+        close: "关闭"
       },
       empty: "未检测到可识别应用。请先启动一次目标应用后再刷新扫描。"
     },
@@ -133,6 +151,10 @@ const messages: Record<Locale, MessageTree> = {
         sourceEmptyBootstrap: "源目录暂无数据，将自动完成初始化后继续迁移",
         sourceDetected: "检测到源数据，准备迁移"
       },
+      pathGroup: {
+        default: "默认分组",
+        account: "账号 {account}"
+      },
       errors: {
         startFailed: "迁移失败：{error}",
         copyPathFailed: "复制路径失败：{error}",
@@ -161,12 +183,22 @@ const messages: Record<Locale, MessageTree> = {
       diskFilterHint: "仅显示“已挂载且可写”的目标盘（与搬迁弹窗一致）。",
       diskCapacity: "可用 {free} / 总计 {total}",
       mountPointHint: "请连接并挂载可写目标磁盘后重试。",
-      tableTitle: "异常项与回滚",
+      tableTitle: "异常项",
       table: {
         app: "应用 / relocation",
         link: "链接状态",
         disk: "挂载盘状态",
         action: "操作"
+      },
+      groupCount: "{count} 项迁移记录",
+      userLabel: "账号 {account}",
+      pathActions: {
+        openInFinder: "在 Finder 打开",
+        copyPath: "复制路径",
+        copied: "已复制",
+        pathUnavailable: "迁移路径信息不可用。",
+        openFailed: "在 Finder 打开失败：{error}",
+        copyFailed: "复制路径失败：{error}"
       },
       state: {
         healthy: "健康",
@@ -183,7 +215,7 @@ const messages: Record<Locale, MessageTree> = {
       recentEvents: "最近健康事件",
       infoRollbackDone: "已执行回滚：{id}",
       infoSelfCheckDone:
-        "自检完成：发现 {drift} 项漂移，已自动纠偏 {fixed} 项，剩余 {remaining} 项需手动处理。",
+        "自检完成：当前严重异常 {drift} 项，已自动处理 {fixed} 项，剩余 {remaining} 项需手动处理。",
       errorRefreshFailed: "健康检查失败：{error}",
       errorSelfCheckFailed: "健康自检失败：{error}",
       errorRollbackFailed: "回滚失败：{error}"
@@ -214,6 +246,11 @@ const messages: Record<Locale, MessageTree> = {
       },
       timeRange: "时间",
       lastStep: "最后步骤",
+      unitId: "数据单元",
+      migrateSourcePath: "迁移目录",
+      rollbackSourcePath: "回滚目录",
+      targetPath: "外存目录",
+      pathUnavailable: "目录信息不可用",
       failureTitle: "失败详情",
       failureCode: "错误码",
       failureShow: "查看失败日志",
@@ -229,6 +266,7 @@ const messages: Record<Locale, MessageTree> = {
       language: "Language",
       cancelled: "Cancel",
       confirm: "Confirm",
+      close: "Close",
       refresh: "Refresh",
       refreshing: "Refreshing..."
     },
@@ -254,6 +292,7 @@ const messages: Record<Locale, MessageTree> = {
       messages: {
         loadFailed: "Failed to load data: {error}",
         restoreConfirm: "Restore data of {name} back to system disk?",
+        restoreBlockedRunning: "{name} is running. Quit it before restoring to system disk.",
         rollbackRecordMissing: "No rollback record found for {name}.",
         restoreDone: "{name} has been restored to the system disk.",
         restoreFailed: "Rollback failed: {error}",
@@ -281,7 +320,7 @@ const messages: Record<Locale, MessageTree> = {
         blockedWithReason: "Current profile is blocked: {reason}",
         deprecated: "Current profile is deprecated and does not allow new migration",
         noExecutableUnit: "No executable relocation unit is currently available",
-        running: "App is running. Please quit it before migration",
+        running: "App is running. Quit it before migrate/restore operations",
         requiresConfirmation: "Contains units that require confirmation before migration",
         migrated: "Symlink migration state already detected",
         ready: "Ready to migrate"
@@ -289,14 +328,30 @@ const messages: Record<Locale, MessageTree> = {
       sizeLabel: "Directory Size",
       sizeLabelCurrent: "Directory Size",
       sizeLabelSaved: "Space Saved",
+      pathCount: "{count} directories",
+      pathGroup: {
+        default: "Default",
+        account: "Account {account}"
+      },
       migrate: "Move to External",
       restore: "Restore to System",
       pathActions: {
         openInFinder: "Show in Finder",
         copyPath: "Copy Path",
+        viewDetails: "View Details",
+        pendingBadge: "Pending {count}",
         copied: "Copied",
         openFailed: "Failed to show path in Finder: {error}",
         copyFailed: "Failed to copy path: {error}"
+      },
+      pathStatus: {
+        migrated: "Migrated",
+        pending: "Pending"
+      },
+      pathDetails: {
+        title: "{name} Path Details",
+        subtitle: "{count} paths",
+        close: "Close"
       },
       empty: "No recognized app found. Launch the target app once and refresh."
     },
@@ -352,6 +407,10 @@ const messages: Record<Locale, MessageTree> = {
           "source path has no data, initialization will be handled automatically",
         sourceDetected: "source data detected, ready to migrate"
       },
+      pathGroup: {
+        default: "Default",
+        account: "Account {account}"
+      },
       errors: {
         startFailed: "Migration failed: {error}",
         copyPathFailed: "Failed to copy path: {error}",
@@ -382,12 +441,22 @@ const messages: Record<Locale, MessageTree> = {
       diskFilterHint: "Only mounted and writable target disks are shown (same as migration dialog).",
       diskCapacity: "Free {free} / Total {total}",
       mountPointHint: "Connect and mount a writable target disk, then retry.",
-      tableTitle: "Issues & Rollback",
+      tableTitle: "Issues",
       table: {
         app: "App / relocation",
         link: "Link Status",
         disk: "Mounted Disk",
         action: "Action"
+      },
+      groupCount: "{count} relocation item(s)",
+      userLabel: "Account {account}",
+      pathActions: {
+        openInFinder: "Show in Finder",
+        copyPath: "Copy Path",
+        copied: "Copied",
+        pathUnavailable: "Migration path info unavailable.",
+        openFailed: "Failed to show path in Finder: {error}",
+        copyFailed: "Failed to copy path: {error}"
       },
       state: {
         healthy: "Healthy",
@@ -404,7 +473,7 @@ const messages: Record<Locale, MessageTree> = {
       recentEvents: "Recent Health Events",
       infoRollbackDone: "Rollback executed: {id}",
       infoSelfCheckDone:
-        "Self-check done: {drift} drift issue(s), {fixed} auto-healed, {remaining} remaining for manual handling.",
+        "Self-check done: {drift} current critical issue(s), {fixed} auto-fixed, {remaining} remaining for manual handling.",
       errorRefreshFailed: "Health check failed: {error}",
       errorSelfCheckFailed: "Health self-check failed: {error}",
       errorRollbackFailed: "Rollback failed: {error}"
@@ -435,6 +504,11 @@ const messages: Record<Locale, MessageTree> = {
       },
       timeRange: "Time",
       lastStep: "Last Step",
+      unitId: "Unit",
+      migrateSourcePath: "Migrated Directory",
+      rollbackSourcePath: "Rolled Back Directory",
+      targetPath: "External Directory",
+      pathUnavailable: "Path info unavailable",
       failureTitle: "Failure Details",
       failureCode: "Error Code",
       failureShow: "Show Failure Logs",

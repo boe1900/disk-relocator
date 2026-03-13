@@ -5,26 +5,40 @@ import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, HardDrive } from 
 import { useI18n } from "../i18n";
 import { formatCommandError } from "../utils/error";
 import type {
+  AppScanResult,
   DiskStatus,
   HealthEvent,
   HealthEventsRequest,
   HealthStatus,
   ReconcileRequest,
   ReconcileResult,
-  RollbackRequest
+  RelocationSummary
 } from "../types/contracts";
 
+const props = withDefaults(
+  defineProps<{
+    appDisplayNames?: Record<string, string>;
+  }>(),
+  {
+    appDisplayNames: () => ({})
+  }
+);
+
 const diskPayload = ref<DiskStatus[]>([]);
+const appScanPayload = ref<AppScanResult[]>([]);
 const healthPayload = ref<HealthStatus[]>([]);
 const historyPayload = ref<HealthEvent[]>([]);
-const rollbackingRelocationId = ref<string | null>(null);
+const relocationPayload = ref<RelocationSummary[]>([]);
 const selfChecking = ref(false);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const info = ref<string | null>(null);
+const pathActionError = ref<string | null>(null);
+const copiedPathKey = ref<string | null>(null);
 const mountedDiskIndex = ref(0);
 const { t } = useI18n();
-let timer: number | undefined;
+let refreshTimer: number | undefined;
+let copyFeedbackTimer: number | undefined;
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
@@ -68,6 +82,129 @@ const mountedDiskPosition = computed(() => {
     1
   );
 });
+const relocationById = computed(() => {
+  const map = new Map<string, RelocationSummary>();
+  for (const row of relocationPayload.value) {
+    map.set(row.relocation_id, row);
+  }
+  return map;
+});
+const sourcePathMetadata = computed(() => {
+  const map = new Map<
+    string,
+    {
+      displayName: string;
+      account: string | null;
+    }
+  >();
+
+  for (const app of appScanPayload.value) {
+    for (const path of app.detected_paths) {
+      const sourcePath = normalizePath(path.path);
+      if (!hasActionablePath(sourcePath) || map.has(sourcePath)) {
+        continue;
+      }
+      const account = accountFromUnitId(path.unit_id);
+      const normalizedName = normalizedDisplayName(path.display_name, account);
+      const fallbackName = app.display_name?.trim() || app.app_id;
+      map.set(sourcePath, {
+        displayName: normalizedName || fallbackName,
+        account
+      });
+    }
+  }
+
+  return map;
+});
+const groupedHealth = computed(() => {
+  const grouped = new Map<
+    string,
+    {
+      appId: string;
+      displayName: string;
+      statuses: HealthStatus[];
+    }
+  >();
+
+  for (const status of healthPayload.value) {
+    const appId = status.app_id;
+    const displayName = appDisplayName(appId);
+    const entry = grouped.get(appId) ?? { appId, displayName, statuses: [] };
+    entry.statuses.push(status);
+    grouped.set(appId, entry);
+  }
+
+  const items = Array.from(grouped.values());
+  items.sort(
+    (left, right) =>
+      left.displayName.localeCompare(right.displayName) || left.appId.localeCompare(right.appId)
+  );
+  for (const group of items) {
+    group.statuses.sort((left, right) => left.relocation_id.localeCompare(right.relocation_id));
+  }
+  return items;
+});
+
+function appDisplayName(appId: string): string {
+  const name = props.appDisplayNames?.[appId]?.trim();
+  return name && name.length > 0 ? name : appId;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function accountFromUnitId(unitId: string | undefined): string | null {
+  const normalized = (unitId ?? "").trim();
+  if (!normalized) {
+    return null;
+  }
+  const segments = normalized
+    .split("::")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length <= 1) {
+    return null;
+  }
+  return segments[1];
+}
+
+function normalizedDisplayName(rawDisplayName: string | undefined, account: string | null): string {
+  const displayName = (rawDisplayName ?? "").trim();
+  if (!displayName || !account) {
+    return displayName;
+  }
+  const suffixPattern = new RegExp(`\\s*\\[${escapeRegExp(account)}\\]\\s*$`);
+  return displayName.replace(suffixPattern, "").trim();
+}
+
+function sourceMetaFor(status: HealthStatus): { displayName: string; account: string | null } {
+  const sourcePath = normalizePath(sourcePathFor(status));
+  const matched = sourcePathMetadata.value.get(sourcePath);
+  if (matched) {
+    return matched;
+  }
+  return {
+    displayName: appDisplayName(status.app_id),
+    account: null
+  };
+}
+
+function sourceDisplayName(status: HealthStatus): string {
+  return sourceMetaFor(status).displayName;
+}
+
+function sourceAccount(status: HealthStatus): string | null {
+  return sourceMetaFor(status).account;
+}
+
+function sourceAccountLabel(status: HealthStatus): string {
+  const account = sourceAccount(status);
+  if (!account) {
+    return "";
+  }
+  return t("health.userLabel", { account });
+}
 
 function healthLabel(state: HealthStatus["state"]): string {
   if (state === "healthy") {
@@ -90,6 +227,82 @@ function diskState(status: HealthStatus): string {
   return t("health.state.mounted");
 }
 
+function shouldShowDiskStateBadge(status: HealthStatus): boolean {
+  return diskState(status) !== t("health.state.mounted");
+}
+
+function sourcePathFor(status: HealthStatus): string {
+  return relocationById.value.get(status.relocation_id)?.source_path ?? "";
+}
+
+function normalizePath(rawPath: string): string {
+  return rawPath.trim();
+}
+
+function hasActionablePath(rawPath: string): boolean {
+  return normalizePath(rawPath).startsWith("/");
+}
+
+function makePathCopyKey(relocationId: string, kind: "source"): string {
+  return `${relocationId}::${kind}`;
+}
+
+function isPathCopied(relocationId: string, kind: "source"): boolean {
+  return copiedPathKey.value === makePathCopyKey(relocationId, kind);
+}
+
+function stopCopyFeedbackTimer(): void {
+  if (copyFeedbackTimer !== undefined) {
+    window.clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = undefined;
+  }
+}
+
+async function onCopyPath(
+  relocationId: string,
+  kind: "source",
+  rawPath: string
+): Promise<void> {
+  const path = normalizePath(rawPath);
+  if (!hasActionablePath(path)) {
+    return;
+  }
+
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("clipboard API unavailable");
+    }
+    await navigator.clipboard.writeText(path);
+    copiedPathKey.value = makePathCopyKey(relocationId, kind);
+    pathActionError.value = null;
+    stopCopyFeedbackTimer();
+    copyFeedbackTimer = window.setTimeout(() => {
+      copiedPathKey.value = null;
+      copyFeedbackTimer = undefined;
+    }, 1200);
+  } catch (err) {
+    pathActionError.value = t("health.pathActions.copyFailed", {
+      error: formatCommandError(err)
+    });
+  }
+}
+
+async function onOpenInFinder(rawPath: string): Promise<void> {
+  const path = normalizePath(rawPath);
+  if (!hasActionablePath(path)) {
+    return;
+  }
+
+  try {
+    await invoke("open_in_finder", { path });
+    pathActionError.value = null;
+  } catch (err) {
+    pathActionError.value = t("health.pathActions.openFailed", {
+      error: formatCommandError(err)
+    });
+  }
+}
+
 function prevMountedDisk(): void {
   if (mountedDisks.value.length <= 1) {
     return;
@@ -110,14 +323,18 @@ async function refreshPanel(): Promise<void> {
   error.value = null;
   try {
     const req: HealthEventsRequest = { limit: 30 };
-    const [disk, health, history] = await Promise.all([
+    const [disk, scans, health, history, relocations] = await Promise.all([
       invoke<DiskStatus[]>("get_disk_status"),
+      invoke<AppScanResult[]>("scan_apps"),
       invoke<HealthStatus[]>("check_health"),
-      invoke<HealthEvent[]>("list_health_events", { req })
+      invoke<HealthEvent[]>("list_health_events", { req }),
+      invoke<RelocationSummary[]>("list_relocations")
     ]);
     diskPayload.value = disk;
+    appScanPayload.value = scans;
     healthPayload.value = health;
     historyPayload.value = history;
+    relocationPayload.value = relocations;
   } catch (err) {
     error.value = t("health.errorRefreshFailed", { error: formatCommandError(err) });
   } finally {
@@ -139,32 +356,21 @@ async function onSelfCheck(): Promise<void> {
   try {
     const result = await runReconcile(true);
     await refreshPanel();
-    const remaining = result.issues.filter((issue) => !issue.safe_fix_applied).length;
+    const activeRelocationIds = new Set(healthPayload.value.map((status) => status.relocation_id));
+    const currentCriticalIssues = result.issues.filter(
+      (issue) => issue.severity === "critical" && activeRelocationIds.has(issue.relocation_id)
+    );
+    const fixed = currentCriticalIssues.filter((issue) => issue.safe_fix_applied).length;
+    const remaining = currentCriticalIssues.length - fixed;
     info.value = t("health.infoSelfCheckDone", {
-      drift: result.drift_count,
-      fixed: result.fixed_count,
+      drift: currentCriticalIssues.length,
+      fixed,
       remaining
     });
   } catch (err) {
     error.value = t("health.errorSelfCheckFailed", { error: formatCommandError(err) });
   } finally {
     selfChecking.value = false;
-  }
-}
-
-async function onRollback(relocationId: string): Promise<void> {
-  info.value = null;
-  error.value = null;
-  rollbackingRelocationId.value = relocationId;
-  const req: RollbackRequest = { relocation_id: relocationId, force: true };
-  try {
-    await invoke("rollback_relocation", { req });
-    info.value = t("health.infoRollbackDone", { id: relocationId });
-    await refreshPanel();
-  } catch (err) {
-    error.value = t("health.errorRollbackFailed", { error: formatCommandError(err) });
-  } finally {
-    rollbackingRelocationId.value = null;
   }
 }
 
@@ -176,7 +382,7 @@ onMounted(async () => {
   } catch {
     // Keep health panel available even if reconcile scan fails on initial load.
   }
-  timer = window.setInterval(() => {
+  refreshTimer = window.setInterval(() => {
     void refreshPanel();
   }, 10000);
 });
@@ -198,9 +404,10 @@ watch(
 );
 
 onBeforeUnmount(() => {
-  if (timer !== undefined) {
-    window.clearInterval(timer);
+  if (refreshTimer !== undefined) {
+    window.clearInterval(refreshTimer);
   }
+  stopCopyFeedbackTimer();
 });
 </script>
 
@@ -285,64 +492,100 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div
+      v-if="pathActionError"
+      class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+    >
+      {{ pathActionError }}
+    </div>
+
     <h3 class="text-lg font-semibold text-gray-800 mb-4">{{ t("health.tableTitle") }}</h3>
-    <div class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-      <table class="w-full text-left border-collapse">
-        <thead>
-          <tr class="bg-gray-50 border-b border-gray-200 text-sm text-gray-500">
-            <th class="p-4 font-medium">{{ t("health.table.app") }}</th>
-            <th class="p-4 font-medium">{{ t("health.table.link") }}</th>
-            <th class="p-4 font-medium">{{ t("health.table.disk") }}</th>
-            <th class="p-4 font-medium">{{ t("health.table.action") }}</th>
-          </tr>
-        </thead>
-        <tbody class="text-sm">
-          <tr v-for="status in healthPayload" :key="status.relocation_id" class="border-b border-gray-100 last:border-0">
-            <td class="p-4">
-              <div class="font-medium text-gray-800">{{ status.app_id }}</div>
-              <div class="text-xs text-gray-400 font-mono mt-1">{{ status.relocation_id }}</div>
-            </td>
-            <td class="p-4">
-              <span v-if="status.state === 'healthy'" class="text-green-600 flex items-center gap-1">
-                <CheckCircle2 :size="14" /> {{ healthLabel(status.state) }}
-              </span>
-              <span v-else class="text-red-500 flex items-center gap-1">
-                <AlertCircle :size="14" /> {{ healthLabel(status.state) }}
-              </span>
-            </td>
-            <td
-              class="p-4"
-              :class="
-                diskState(status) === t('health.state.mounted') ? 'text-gray-700' : 'text-red-500'
-              "
-            >
-              {{ diskState(status) }}
-            </td>
-            <td class="p-4 align-middle">
-              <div class="flex items-center gap-3 min-h-5">
-                <button class="inline-flex items-center text-blue-500 hover:underline" @click="onSelfCheck">
-                  {{ t("health.recheck") }}
-                </button>
-                <button
-                  v-if="status.state !== 'healthy'"
-                  class="inline-flex items-center text-red-500 hover:underline"
-                  :disabled="rollbackingRelocationId === status.relocation_id"
-                  @click="onRollback(status.relocation_id)"
-                >
-                  {{
-                    rollbackingRelocationId === status.relocation_id
-                      ? t("health.rollbacking")
-                      : t("health.rollback")
-                  }}
-                </button>
+    <div class="space-y-4">
+      <div
+        v-for="group in groupedHealth"
+        :key="group.appId"
+        class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+      >
+        <div class="px-4 py-3 border-b border-gray-100 bg-gray-50/70 flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div class="text-sm font-semibold text-gray-800 truncate">{{ group.displayName }}</div>
+            <div class="text-xs text-gray-400 font-mono truncate">{{ group.appId }}</div>
+          </div>
+          <div class="text-xs text-gray-500 whitespace-nowrap">
+            {{ t("health.groupCount", { count: group.statuses.length }) }}
+          </div>
+        </div>
+
+        <div class="divide-y divide-gray-100">
+          <div
+            v-for="status in group.statuses"
+            :key="status.relocation_id"
+            class="p-4"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <div class="text-xs text-gray-400 font-mono truncate">{{ status.relocation_id }}</div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span v-if="status.state === 'healthy'" class="text-green-600 flex items-center gap-1">
+                    <CheckCircle2 :size="14" /> {{ healthLabel(status.state) }}
+                  </span>
+                  <span v-else class="text-red-500 flex items-center gap-1">
+                    <AlertCircle :size="14" /> {{ healthLabel(status.state) }}
+                  </span>
+                  <span
+                    v-if="shouldShowDiskStateBadge(status)"
+                    class="text-xs px-1.5 py-0.5 rounded border text-red-600 border-red-200 bg-red-50"
+                  >
+                    {{ diskState(status) }}
+                  </span>
+                </div>
               </div>
-            </td>
-          </tr>
-          <tr v-if="!loading && healthPayload.length === 0">
-            <td colspan="4" class="p-6 text-center text-sm text-gray-500">{{ t("health.empty") }}</td>
-          </tr>
-        </tbody>
-      </table>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-xs text-gray-600 truncate max-w-xs">{{ sourceDisplayName(status) }}</span>
+                <span
+                  v-if="sourceAccount(status)"
+                  class="text-[11px] px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500"
+                >
+                  {{ sourceAccountLabel(status) }}
+                </span>
+                <template v-if="hasActionablePath(sourcePathFor(status))">
+                  <button
+                    type="button"
+                    data-test="health-open-path-btn"
+                    class="text-xs text-gray-600 hover:text-gray-800 whitespace-nowrap"
+                    @click.stop.prevent="onOpenInFinder(sourcePathFor(status))"
+                  >
+                    {{ t("health.pathActions.openInFinder") }}
+                  </button>
+                  <button
+                    type="button"
+                    data-test="health-copy-path-btn"
+                    class="text-xs text-blue-600 hover:text-blue-700 whitespace-nowrap"
+                    @click.stop.prevent="onCopyPath(status.relocation_id, 'source', sourcePathFor(status))"
+                  >
+                    {{
+                      isPathCopied(status.relocation_id, "source")
+                        ? t("health.pathActions.copied")
+                        : t("health.pathActions.copyPath")
+                    }}
+                  </button>
+                </template>
+                <span v-else class="text-xs text-gray-400">
+                  {{ t("health.pathActions.pathUnavailable") }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="!loading && groupedHealth.length === 0"
+        class="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 text-center text-sm text-gray-500"
+      >
+        {{ t("health.empty") }}
+      </div>
     </div>
 
     <div v-if="historyPayload.length > 0" class="mt-6 rounded-2xl border border-gray-200 bg-white p-4">

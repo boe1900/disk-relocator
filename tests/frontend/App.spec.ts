@@ -206,6 +206,59 @@ describe("App", () => {
     expect(invokeMock.mock.calls.filter(([name]) => name === "scan_apps").length).toBeGreaterThan(1);
   });
 
+  it("allows clearing info banner manually", async () => {
+    invokeMock.mockImplementation(makeInvokeMock({ listRelocations: [] }));
+
+    const wrapper = mount(App, {
+      global: {
+        stubs: {
+          AppListView: AppListStub,
+          MigrationDialog: MigrationDialogStub,
+          HealthPanelView: HealthPanelStub,
+          OperationLogExportView: LogPanelStub
+        }
+      }
+    });
+
+    await flushPromises();
+    await wrapper.get('[data-test="emit-done"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("done-message");
+
+    await wrapper.get('[data-test="clear-info-btn"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("done-message");
+  });
+
+  it("auto clears info banner after timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock.mockImplementation(makeInvokeMock({ listRelocations: [] }));
+
+      const wrapper = mount(App, {
+        global: {
+          stubs: {
+            AppListView: AppListStub,
+            MigrationDialog: MigrationDialogStub,
+            HealthPanelView: HealthPanelStub,
+            OperationLogExportView: LogPanelStub
+          }
+        }
+      });
+
+      await flushPromises();
+      await wrapper.get('[data-test="emit-done"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain("done-message");
+
+      vi.advanceTimersByTime(6100);
+      await flushPromises();
+      expect(wrapper.text()).not.toContain("done-message");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses scanned zero size for existing migrated symlink paths", async () => {
     invokeMock.mockImplementation(
       makeInvokeMock({
@@ -283,6 +336,63 @@ describe("App", () => {
     expect(invokeMock.mock.calls.some(([name]) => name === "rollback_relocation")).toBe(false);
   });
 
+  it("blocks restore when target app is still running", async () => {
+    invokeMock.mockImplementation(
+      makeInvokeMock({
+        scanApps: [
+          {
+            app_id: "wechat-non-mas",
+            display_name: "WeChat",
+            icon_path: null,
+            icon_data_url: null,
+            availability: "active",
+            detected_paths: [
+              {
+                path: "/Users/test/Library/Containers/com.tencent.xinWeChat",
+                exists: true,
+                is_symlink: true,
+                size_bytes: 512
+              }
+            ],
+            running: true,
+            allow_bootstrap_if_source_missing: false,
+            last_verified_at: "2026-03-06T10:00:00Z"
+          }
+        ],
+        listRelocations: [
+          {
+            relocation_id: "reloc_rollback_target",
+            app_id: "wechat-non-mas",
+            state: "HEALTHY",
+            health_state: "healthy",
+            source_path: "/Users/test/source",
+            target_path: "/Volumes/M4_Ext_SSD/AppData/WeChat",
+            updated_at: "2026-03-06T10:00:00Z"
+          }
+        ]
+      })
+    );
+
+    const wrapper = mount(App, {
+      global: {
+        stubs: {
+          AppListView: AppListStub,
+          MigrationDialog: MigrationDialogStub,
+          HealthPanelView: HealthPanelStub,
+          OperationLogExportView: LogPanelStub
+        }
+      }
+    });
+
+    await flushPromises();
+    await wrapper.get('[data-test="emit-restore"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("WeChat 正在运行，请先完全退出后再恢复到系统盘");
+    expect(dialogConfirmMock).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls.some(([name]) => name === "rollback_relocation")).toBe(false);
+  });
+
   it("executes rollback and refreshes state after restore", async () => {
     invokeMock.mockImplementation(
       makeInvokeMock({
@@ -318,14 +428,77 @@ describe("App", () => {
     expect(invokeMock).toHaveBeenCalledWith(
       "rollback_relocation",
       expect.objectContaining({
-        req: {
+        req: expect.objectContaining({
           relocation_id: "reloc_rollback_target",
           force: true
-        }
+        })
       })
     );
     expect(wrapper.text()).toContain("已回滚到系统盘");
     expect(invokeMock.mock.calls.filter(([name]) => name === "scan_apps").length).toBeGreaterThan(1);
+  });
+
+  it("rolls back all active relocation records for the selected app", async () => {
+    invokeMock.mockImplementation(
+      makeInvokeMock({
+        listRelocations: [
+          {
+            relocation_id: "reloc_active_1",
+            app_id: "wechat-non-mas",
+            state: "HEALTHY",
+            health_state: "healthy",
+            source_path: "/Users/test/source-1",
+            target_path: "/Volumes/M4_Ext_SSD/AppData/WeChat/source-1",
+            updated_at: "2026-03-06T10:00:00Z"
+          },
+          {
+            relocation_id: "reloc_active_2",
+            app_id: "wechat-non-mas",
+            state: "DEGRADED",
+            health_state: "degraded",
+            source_path: "/Users/test/source-2",
+            target_path: "/Volumes/M4_Ext_SSD/AppData/WeChat/source-2",
+            updated_at: "2026-03-06T10:01:00Z"
+          },
+          {
+            relocation_id: "reloc_inactive",
+            app_id: "wechat-non-mas",
+            state: "ROLLED_BACK",
+            health_state: "healthy",
+            source_path: "/Users/test/source-3",
+            target_path: "/Volumes/M4_Ext_SSD/AppData/WeChat/source-3",
+            updated_at: "2026-03-06T09:59:00Z"
+          }
+        ]
+      })
+    );
+
+    const wrapper = mount(App, {
+      global: {
+        stubs: {
+          AppListView: AppListStub,
+          MigrationDialog: MigrationDialogStub,
+          HealthPanelView: HealthPanelStub,
+          OperationLogExportView: LogPanelStub
+        }
+      }
+    });
+
+    await flushPromises();
+    await wrapper.get('[data-test="emit-restore"]').trigger("click");
+    await flushPromises();
+
+    const rollbackCalls = invokeMock.mock.calls.filter(([name]) => name === "rollback_relocation");
+    expect(rollbackCalls).toHaveLength(2);
+    expect(rollbackCalls.map(([, payload]) => (payload as { req: { relocation_id: string } }).req.relocation_id)).toEqual(
+      expect.arrayContaining(["reloc_active_1", "reloc_active_2"])
+    );
+    expect(
+      rollbackCalls.some(
+        ([, payload]) =>
+          (payload as { req: { relocation_id: string } }).req.relocation_id === "reloc_inactive"
+      )
+    ).toBe(false);
   });
 
   it("does not call rollback when user cancels confirm dialog", async () => {

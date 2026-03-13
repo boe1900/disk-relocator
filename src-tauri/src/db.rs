@@ -400,7 +400,7 @@ impl Database {
                      state, health_state, last_error_code, trace_id, source_size_bytes, target_size_bytes,
                      created_at, updated_at,
                      ROW_NUMBER() OVER (
-                       PARTITION BY app_id
+                       PARTITION BY app_id, source_path
                        ORDER BY datetime(updated_at) DESC, rowid DESC
                      ) AS rank_latest
               FROM relocations
@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn health_monitoring_list_filters_active_states_and_orders_desc() {
+    fn health_monitoring_list_keeps_latest_per_app_source_and_orders_desc() {
         let dir = tempdir().expect("create temp dir");
         let db = Database::init(dir.path().to_path_buf()).expect("init database");
 
@@ -945,9 +945,10 @@ mod tests {
         let rows = db
             .list_health_monitoring_relocations()
             .expect("list monitoring rows");
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].relocation_id, "reloc_active_wechat_latest");
         assert_eq!(rows[1].relocation_id, "reloc_active_new");
+        assert_eq!(rows[2].relocation_id, "reloc_active_old");
     }
 
     #[test]

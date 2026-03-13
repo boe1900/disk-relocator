@@ -36,6 +36,8 @@ pub struct MigrateRequest {
     pub unit_id: Option<String>,
     pub target_root: String,
     pub mode: String,
+    #[serde(default)]
+    pub trace_id: Option<String>,
     pub confirm_high_risk: bool,
     #[serde(default)]
     pub cleanup_backup_after_migrate: bool,
@@ -45,6 +47,8 @@ pub struct MigrateRequest {
 pub struct RollbackRequest {
     pub relocation_id: String,
     pub force: bool,
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

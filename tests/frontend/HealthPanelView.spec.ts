@@ -10,13 +10,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 describe("HealthPanelView", () => {
   const invokeMock = vi.mocked(invoke);
   const reconcileRequests: Array<Record<string, unknown>> = [];
-  const rollbackRequests: Array<Record<string, unknown>> = [];
 
   beforeEach(() => {
     window.localStorage.clear();
     invokeMock.mockReset();
     reconcileRequests.length = 0;
-    rollbackRequests.length = 0;
     vi.useFakeTimers();
 
     invokeMock.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
@@ -48,6 +46,9 @@ describe("HealthPanelView", () => {
       if (command === "list_health_events") {
         return [];
       }
+      if (command === "list_relocations") {
+        return [];
+      }
 
       if (command === "reconcile_relocations") {
         const req = (payload?.req as Record<string, unknown>) ?? {};
@@ -75,21 +76,8 @@ describe("HealthPanelView", () => {
         };
       }
 
-      if (command === "rollback_relocation") {
-        const req = (payload?.req as Record<string, unknown>) ?? {};
-        rollbackRequests.push(req);
-        return {
-          relocation_id: "reloc_test_001",
-          app_id: "wechat-non-mas",
-          state: "ROLLED_BACK",
-          health_state: "healthy",
-          source_path: "/Users/test/source",
-          target_path: "/Volumes/M4_Ext_SSD/target",
-          backup_path: null,
-          trace_id: "tr_rb",
-          started_at: "2026-03-06T10:00:00Z",
-          updated_at: "2026-03-06T10:00:01Z"
-        };
+      if (command === "scan_apps") {
+        return [];
       }
 
       throw new Error(`unexpected command: ${command}`);
@@ -101,7 +89,7 @@ describe("HealthPanelView", () => {
     vi.useRealTimers();
   });
 
-  it("runs self-check with auto-heal and supports rollback action", async () => {
+  it("runs self-check with auto-heal", async () => {
     const wrapper = mount(HealthPanelView);
     await flushPromises();
 
@@ -117,18 +105,188 @@ describe("HealthPanelView", () => {
     await flushPromises();
     expect(reconcileRequests.length).toBeGreaterThan(1);
     expect(wrapper.text()).toContain("自检完成");
+    expect(wrapper.text()).toContain("当前严重异常 0 项");
+    expect(wrapper.text()).not.toContain("一键回滚");
+  });
 
-    const rollbackBtn = wrapper
-      .findAll("button")
-      .find((btn) => btn.text().includes("一键回滚"));
-    expect(rollbackBtn).toBeDefined();
+  it("groups health items by app and uses display name with path action buttons", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_disk_status") {
+        return [
+          {
+            mount_point: "/Volumes/M4_Ext_SSD",
+            display_name: "M4_Ext_SSD",
+            is_mounted: true,
+            is_writable: true,
+            free_bytes: 1000,
+            total_bytes: 2000
+          }
+        ];
+      }
+      if (command === "check_health") {
+        return [
+          {
+            relocation_id: "reloc_wx_a",
+            app_id: "wechat-non-mas",
+            state: "healthy",
+            checks: [{ code: "HEALTH_OK", ok: true, message: "ok" }],
+            observed_at: "2026-03-06T10:00:00Z"
+          },
+          {
+            relocation_id: "reloc_wx_b",
+            app_id: "wechat-non-mas",
+            state: "degraded",
+            checks: [{ code: "HEALTH_TARGET_READONLY", ok: false, message: "readonly" }],
+            observed_at: "2026-03-06T10:00:01Z"
+          },
+          {
+            relocation_id: "reloc_tg_a",
+            app_id: "telegram-desktop",
+            state: "healthy",
+            checks: [{ code: "HEALTH_OK", ok: true, message: "ok" }],
+            observed_at: "2026-03-06T10:00:02Z"
+          }
+        ];
+      }
+      if (command === "list_health_events") {
+        return [];
+      }
+      if (command === "scan_apps") {
+        return [
+          {
+            app_id: "wechat-non-mas",
+            display_name: "微信",
+            availability: "active",
+            detected_paths: [
+              {
+                unit_id: "wechat-msg-all::wxid_a",
+                display_name: "聊天媒体资源库 [wxid_a]",
+                path: "/Users/test/wechat/a/source",
+                exists: true,
+                is_symlink: true,
+                size_bytes: 10
+              },
+              {
+                unit_id: "wechat-msg-all::wxid_b",
+                display_name: "聊天媒体资源库 [wxid_b]",
+                path: "/Users/test/wechat/b/source",
+                exists: true,
+                is_symlink: true,
+                size_bytes: 11
+              }
+            ],
+            running: false,
+            allow_bootstrap_if_source_missing: false,
+            last_verified_at: "2026-03-06T10:00:00Z"
+          },
+          {
+            app_id: "telegram-desktop",
+            display_name: "Telegram",
+            availability: "active",
+            detected_paths: [
+              {
+                unit_id: "telegram-media::account-1",
+                display_name: "媒体缓存 [account-1]",
+                path: "/Users/test/telegram/a/source",
+                exists: true,
+                is_symlink: true,
+                size_bytes: 12
+              }
+            ],
+            running: false,
+            allow_bootstrap_if_source_missing: false,
+            last_verified_at: "2026-03-06T10:00:00Z"
+          }
+        ];
+      }
+      if (command === "list_relocations") {
+        return [
+          {
+            relocation_id: "reloc_wx_a",
+            app_id: "wechat-non-mas",
+            state: "HEALTHY",
+            health_state: "healthy",
+            source_path: "/Users/test/wechat/a/source",
+            target_path: "/Volumes/M4_Ext_SSD/wechat/a/target",
+            source_size_bytes: 10,
+            target_size_bytes: 10,
+            updated_at: "2026-03-06T10:00:00Z"
+          },
+          {
+            relocation_id: "reloc_wx_b",
+            app_id: "wechat-non-mas",
+            state: "DEGRADED",
+            health_state: "degraded",
+            source_path: "/Users/test/wechat/b/source",
+            target_path: "/Volumes/M4_Ext_SSD/wechat/b/target",
+            source_size_bytes: 11,
+            target_size_bytes: 11,
+            updated_at: "2026-03-06T10:00:01Z"
+          },
+          {
+            relocation_id: "reloc_tg_a",
+            app_id: "telegram-desktop",
+            state: "HEALTHY",
+            health_state: "healthy",
+            source_path: "/Users/test/telegram/a/source",
+            target_path: "/Volumes/M4_Ext_SSD/telegram/a/target",
+            source_size_bytes: 12,
+            target_size_bytes: 12,
+            updated_at: "2026-03-06T10:00:02Z"
+          }
+        ];
+      }
+      if (command === "reconcile_relocations") {
+        return {
+          trace_id: "tr_reconcile_boot",
+          observed_at: "2026-03-06T10:00:00Z",
+          scanned: 3,
+          drift_count: 0,
+          safe_fixable_count: 0,
+          fixed_count: 0,
+          issues: []
+        };
+      }
+      if (command === "rollback_relocation") {
+        return {
+          relocation_id: "reloc_wx_b",
+          app_id: "wechat-non-mas",
+          state: "ROLLED_BACK",
+          health_state: "healthy",
+          source_path: "/Users/test/source",
+          target_path: "/Volumes/M4_Ext_SSD/target",
+          backup_path: null,
+          trace_id: "tr_rb",
+          started_at: "2026-03-06T10:00:00Z",
+          updated_at: "2026-03-06T10:00:01Z"
+        };
+      }
+      if (command === "scan_apps") {
+        return [];
+      }
 
-    await rollbackBtn!.trigger("click");
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const wrapper = mount(HealthPanelView, {
+      props: {
+        appDisplayNames: {
+          "wechat-non-mas": "微信",
+          "telegram-desktop": "Telegram"
+        }
+      }
+    });
     await flushPromises();
 
-    expect(rollbackRequests.length).toBe(1);
-    expect(rollbackRequests[0].relocation_id).toBe("reloc_test_001");
-    expect(rollbackRequests[0].force).toBe(true);
+    expect(wrapper.text()).toContain("微信");
+    expect(wrapper.text()).toContain("Telegram");
+    expect(wrapper.text()).toContain("2 项迁移记录");
+    expect(wrapper.text()).toContain("聊天媒体资源库");
+    expect(wrapper.text()).toContain("账号 wxid_a");
+    expect(wrapper.text()).toContain("在 Finder 打开");
+    expect(wrapper.text()).toContain("复制路径");
+    expect(wrapper.text()).not.toContain("[wxid_a]");
+    expect(wrapper.text()).not.toContain("[wxid_b]");
   });
 
   it("supports mounted disk carousel and shows self-check error", async () => {
@@ -170,6 +328,9 @@ describe("HealthPanelView", () => {
       if (command === "list_health_events") {
         return [];
       }
+      if (command === "list_relocations") {
+        return [];
+      }
 
       if (command === "reconcile_relocations") {
         reconcileCallCount += 1;
@@ -200,6 +361,9 @@ describe("HealthPanelView", () => {
           started_at: "2026-03-06T10:00:00Z",
           updated_at: "2026-03-06T10:00:01Z"
         };
+      }
+      if (command === "scan_apps") {
+        return [];
       }
 
       throw new Error(`unexpected command: ${command}`);
@@ -251,6 +415,9 @@ describe("HealthPanelView", () => {
       if (command === "list_health_events") {
         return [];
       }
+      if (command === "list_relocations") {
+        return [];
+      }
       if (command === "reconcile_relocations") {
         return {
           trace_id: "tr_reconcile_boot",
@@ -276,6 +443,10 @@ describe("HealthPanelView", () => {
           updated_at: "2026-03-06T10:00:01Z"
         };
       }
+      if (command === "scan_apps") {
+        return [];
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -308,6 +479,9 @@ describe("HealthPanelView", () => {
       if (command === "list_health_events") {
         return [];
       }
+      if (command === "list_relocations") {
+        return [];
+      }
       if (command === "reconcile_relocations") {
         return {
           trace_id: "tr_reconcile_boot",
@@ -333,6 +507,10 @@ describe("HealthPanelView", () => {
           updated_at: "2026-03-06T10:00:01Z"
         };
       }
+      if (command === "scan_apps") {
+        return [];
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -344,65 +522,6 @@ describe("HealthPanelView", () => {
     vi.advanceTimersByTime(10_100);
     await flushPromises();
     expect(checkHealthCalls).toBeGreaterThan(baseline);
-  });
-
-  it("shows rollback error when rollback command fails", async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "get_disk_status") {
-        return [
-          {
-            mount_point: "/Volumes/M4_Ext_SSD",
-            display_name: "M4_Ext_SSD",
-            is_mounted: true,
-            is_writable: true,
-            free_bytes: 1000,
-            total_bytes: 2000
-          }
-        ];
-      }
-      if (command === "check_health") {
-        return [
-          {
-            relocation_id: "reloc_test_001",
-            app_id: "wechat-non-mas",
-            state: "broken",
-            checks: [{ code: "HEALTH_TARGET_MISSING", ok: false, message: "missing" }],
-            observed_at: "2026-03-06T10:00:00Z"
-          }
-        ];
-      }
-      if (command === "list_health_events") {
-        return [];
-      }
-      if (command === "reconcile_relocations") {
-        return {
-          trace_id: "tr_reconcile_boot",
-          observed_at: "2026-03-06T10:00:00Z",
-          scanned: 1,
-          drift_count: 1,
-          safe_fixable_count: 1,
-          fixed_count: 1,
-          issues: []
-        };
-      }
-      if (command === "rollback_relocation") {
-        throw new Error("rollback failed");
-      }
-      throw new Error(`unexpected command: ${command}`);
-    });
-
-    const wrapper = mount(HealthPanelView);
-    await flushPromises();
-
-    const rollbackBtn = wrapper
-      .findAll("button")
-      .find((btn) => btn.text().includes("一键回滚"));
-    expect(rollbackBtn).toBeDefined();
-    await rollbackBtn!.trigger("click");
-    await flushPromises();
-
-    expect(wrapper.text()).toContain("回滚失败");
-    expect(wrapper.text()).toContain("rollback failed");
   });
 
   it("shows at most six recent health events", async () => {
@@ -433,6 +552,9 @@ describe("HealthPanelView", () => {
           observed_at: `2026-03-06T10:00:0${index}Z`
         }));
       }
+      if (command === "list_relocations") {
+        return [];
+      }
       if (command === "reconcile_relocations") {
         return {
           trace_id: "tr_reconcile_boot",
@@ -458,6 +580,10 @@ describe("HealthPanelView", () => {
           updated_at: "2026-03-06T10:00:01Z"
         };
       }
+      if (command === "scan_apps") {
+        return [];
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -506,6 +632,9 @@ describe("HealthPanelView", () => {
       if (command === "list_health_events") {
         return [];
       }
+      if (command === "list_relocations") {
+        return [];
+      }
       if (command === "reconcile_relocations") {
         return {
           trace_id: "tr_reconcile_boot",
@@ -531,6 +660,10 @@ describe("HealthPanelView", () => {
           updated_at: "2026-03-06T10:00:01Z"
         };
       }
+      if (command === "scan_apps") {
+        return [];
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -561,6 +694,9 @@ describe("HealthPanelView", () => {
       if (command === "list_health_events") {
         return [];
       }
+      if (command === "list_relocations") {
+        return [];
+      }
       if (command === "reconcile_relocations") {
         throw new Error("reconcile boot failed");
       }
@@ -578,6 +714,10 @@ describe("HealthPanelView", () => {
           updated_at: "2026-03-06T10:00:01Z"
         };
       }
+      if (command === "scan_apps") {
+        return [];
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -631,6 +771,9 @@ describe("HealthPanelView", () => {
       if (command === "list_health_events") {
         return [];
       }
+      if (command === "list_relocations") {
+        return [];
+      }
       if (command === "reconcile_relocations") {
         return {
           trace_id: "tr_reconcile_boot",
@@ -656,6 +799,10 @@ describe("HealthPanelView", () => {
           updated_at: "2026-03-06T10:00:01Z"
         };
       }
+      if (command === "scan_apps") {
+        return [];
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 

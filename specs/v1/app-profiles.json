@@ -23,18 +23,18 @@
       "app_id": "wechat-non-mas",
       "display_name": "WeChat (Non-MAS)",
       "description_i18n": {
-        "zh": "迁移微信 xwechat_files 整目录。",
-        "en": "Migrate the whole WeChat xwechat_files directory."
+        "zh": "迁移微信聊天媒体目录（按账号自动识别）。",
+        "en": "Migrate WeChat message media directories with account auto-discovery."
       },
       "bundle_ids": ["com.tencent.xinWeChat"],
       "process_names": ["WeChat"],
       "units": [
         {
-          "unit_id": "xwechat-files",
-          "display_name": "xwechat_files",
+          "unit_id": "wechat-msg-all",
+          "display_name": "聊天媒体资源库 (含图片/视频/文件)",
           "category": "media",
-          "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
-          "target_path_template": "{target_root}/AppData/WeChat/xwechat_files",
+          "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/*/msg",
+          "target_path_template": "{target_root}/AppData/WeChat/{match_1}/msg",
           "allow_bootstrap_if_source_missing": true
         }
       ]
@@ -43,18 +43,18 @@
       "app_id": "telegram-mac-native",
       "display_name": "Telegram (macOS 原生版)",
       "description_i18n": {
-        "zh": "迁移 Telegram macOS 原生版 Group Container。",
-        "en": "Migrate Telegram macOS native Group Container."
+        "zh": "迁移 Telegram macOS 原生版媒体缓存目录。",
+        "en": "Migrate Telegram macOS native media cache directory."
       },
       "bundle_ids": ["ru.keepcoder.Telegram"],
       "process_names": ["Telegram"],
       "units": [
         {
-          "unit_id": "telegram-group-container",
-          "display_name": "Shared Media & Caches",
+          "unit_id": "telegram-media",
+          "display_name": "媒体缓存 (图片/视频/GIF)",
           "category": "media",
-          "source_path": "~/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram",
-          "target_path_template": "{target_root}/AppData/Telegram_Native",
+          "source_path": "~/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable/account-*/postbox/media",
+          "target_path_template": "{target_root}/AppData/Telegram_Native/{match_1}/media",
           "allow_bootstrap_if_source_missing": false
         }
       ]
@@ -63,18 +63,58 @@
       "app_id": "dingtalk",
       "display_name": "钉钉 (DingTalk)",
       "description_i18n": {
-        "zh": "迁移钉钉核心数据与下载文件目录。",
-        "en": "Migrate DingTalk core data and downloaded files directory."
+        "zh": "迁移钉钉媒体与离线资源目录。",
+        "en": "Migrate DingTalk media and offline resource directories."
       },
       "bundle_ids": ["com.alibaba.DingTalkMac"],
       "process_names": ["DingTalk"],
       "units": [
         {
-          "unit_id": "dingtalk-data",
-          "display_name": "核心数据与下载文件",
-          "category": "app-data",
-          "source_path": "~/Library/Application Support/DingTalkMac",
-          "target_path_template": "{target_root}/AppData/DingTalk/ApplicationSupport",
+          "unit_id": "dingtalk-web-image",
+          "display_name": "图片缓存 (ImageFiles)",
+          "category": "media",
+          "source_path": "~/Library/Application Support/DingTalkMac/*/ImageFiles",
+          "target_path_template": "{target_root}/AppData/DingTalk/{match_1}/ImageFiles",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "dingtalk-web-video",
+          "display_name": "视频缓存 (VideoFiles)",
+          "category": "media",
+          "source_path": "~/Library/Application Support/DingTalkMac/*/VideoFiles",
+          "target_path_template": "{target_root}/AppData/DingTalk/{match_1}/VideoFiles",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "dingtalk-web-audio",
+          "display_name": "语音消息缓存 (AudioFiles)",
+          "category": "media",
+          "source_path": "~/Library/Application Support/DingTalkMac/*/AudioFiles",
+          "target_path_template": "{target_root}/AppData/DingTalk/{match_1}/AudioFiles",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "dingtalk-web-emotion",
+          "display_name": "表情包缓存 (GifEmotionFiles)",
+          "category": "media",
+          "source_path": "~/Library/Application Support/DingTalkMac/*/GifEmotionFiles",
+          "target_path_template": "{target_root}/AppData/DingTalk/{match_1}/GifEmotionFiles",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "dingtalk-web-eapp-download",
+          "display_name": "微应用离线包 (EApp/download)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/DingTalkMac/*/EAppFiles/download",
+          "target_path_template": "{target_root}/AppData/DingTalk/{match_1}/EAppFiles/download",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "dingtalk-web-eapp-unziped",
+          "display_name": "微应用解压资源 (EApp/unziped)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/DingTalkMac/*/EAppFiles/unziped",
+          "target_path_template": "{target_root}/AppData/DingTalk/{match_1}/EAppFiles/unziped",
           "allow_bootstrap_if_source_missing": false
         }
       ]

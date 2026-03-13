@@ -81,6 +81,10 @@ describe("OperationLogExportView", () => {
     expect(wrapper.text()).toContain("失败");
     expect(wrapper.text()).not.toContain("trace_id");
     expect(wrapper.text()).not.toContain("relocation_id");
+    expect(wrapper.text()).toContain("迁移目录");
+    expect(wrapper.text()).toContain("/Users/test/source");
+    expect(wrapper.text()).toContain("外存目录");
+    expect(wrapper.text()).toContain("/Volumes/Test/target");
 
     const expandBtn = wrapper
       .findAll("button")
@@ -92,6 +96,74 @@ describe("OperationLogExportView", () => {
 
     expect(wrapper.text()).toContain("ROLLBACK_RESTORE_BACKUP_FAILED");
     expect(wrapper.text()).toContain("failed to restore source path from backup path.");
+  });
+
+  it("groups multi-directory records from the same trace into one batch card", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_relocations") {
+        return [
+          {
+            relocation_id: "reloc_batch_1",
+            app_id: "wechat-non-mas",
+            state: "HEALTHY",
+            health_state: "healthy",
+            source_path: "/Users/test/batch/source-1",
+            target_path: "/Volumes/Test/batch/target-1",
+            updated_at: "2026-03-06T10:10:00Z"
+          },
+          {
+            relocation_id: "reloc_batch_2",
+            app_id: "wechat-non-mas",
+            state: "HEALTHY",
+            health_state: "healthy",
+            source_path: "/Users/test/batch/source-2",
+            target_path: "/Volumes/Test/batch/target-2",
+            updated_at: "2026-03-06T10:10:01Z"
+          }
+        ];
+      }
+      if (command === "list_operation_logs") {
+        return [
+          {
+            log_id: "log_batch_1",
+            relocation_id: "reloc_batch_1",
+            trace_id: "tr_batch_same",
+            stage: "migration",
+            step: "metadata_commit",
+            status: "succeeded",
+            error_code: null,
+            duration_ms: 20,
+            message: "batch item 1",
+            details: {},
+            created_at: "2026-03-06T10:00:01Z"
+          },
+          {
+            log_id: "log_batch_2",
+            relocation_id: "reloc_batch_2",
+            trace_id: "tr_batch_same",
+            stage: "migration",
+            step: "metadata_commit",
+            status: "succeeded",
+            error_code: null,
+            duration_ms: 21,
+            message: "batch item 2",
+            details: {},
+            created_at: "2026-03-06T10:00:02Z"
+          }
+        ];
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const wrapper = mount(OperationLogExportView);
+    await flushPromises();
+
+    expect(wrapper.findAll('[data-test="timeline-item"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-test="timeline-path-item"]')).toHaveLength(2);
+    expect(wrapper.text()).toContain("/Users/test/batch/source-1");
+    expect(wrapper.text()).toContain("/Users/test/batch/source-2");
+    expect(wrapper.text()).toContain("/Volumes/Test/batch/target-1");
+    expect(wrapper.text()).toContain("/Volumes/Test/batch/target-2");
   });
 
   it("filters records by operation type and app", async () => {
@@ -277,6 +349,74 @@ describe("OperationLogExportView", () => {
     expect(wrapper.text()).toContain("未知应用");
     expect(wrapper.text()).toContain("回滚");
     expect(wrapper.text()).toContain("成功");
+    expect(wrapper.text()).toContain("目录信息不可用");
+  });
+
+  it("extracts source/target path and unit_id from log details when relocation mapping is missing", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_relocations") {
+        return [];
+      }
+      if (command === "list_operation_logs") {
+        return [
+          {
+            log_id: "log_detail_fallback_001",
+            relocation_id: "reloc_missing_detail",
+            trace_id: "tr_detail",
+            stage: "precheck",
+            step: "source_ready",
+            status: "succeeded",
+            error_code: null,
+            duration_ms: 8,
+            message: "source ready",
+            details: {
+              source_path: "/Users/test/detail-source",
+              unit_id: "wechat-msg-all::wxid_123"
+            },
+            created_at: "2026-03-06T10:01:10Z"
+          },
+          {
+            log_id: "log_detail_fallback_002",
+            relocation_id: "reloc_missing_detail",
+            trace_id: "tr_detail",
+            stage: "migration",
+            step: "postcheck",
+            status: "succeeded",
+            error_code: null,
+            duration_ms: 10,
+            message: "postcheck",
+            details: {
+              target_path: "/Volumes/Test/detail-target"
+            },
+            created_at: "2026-03-06T10:01:12Z"
+          },
+          {
+            log_id: "log_detail_fallback_003",
+            relocation_id: "reloc_missing_detail",
+            trace_id: "tr_detail",
+            stage: "migration",
+            step: "metadata_commit",
+            status: "succeeded",
+            error_code: null,
+            duration_ms: 12,
+            message: "done",
+            details: {},
+            created_at: "2026-03-06T10:01:13Z"
+          }
+        ];
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const wrapper = mount(OperationLogExportView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("迁移目录");
+    expect(wrapper.text()).toContain("/Users/test/detail-source");
+    expect(wrapper.text()).toContain("外存目录");
+    expect(wrapper.text()).toContain("/Volumes/Test/detail-target");
+    expect(wrapper.text()).toContain("数据单元");
+    expect(wrapper.text()).toContain("wechat-msg-all::wxid_123");
   });
 
   it("filters out non-migration and non-rollback traces as unknown actions", async () => {

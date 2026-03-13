@@ -20,6 +20,7 @@ use crate::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use fs2::{available_space, total_space};
+use glob::glob;
 use serde_json::json;
 use std::collections::{hash_map::DefaultHasher, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -69,6 +70,7 @@ struct MigrationUnitPlan {
     unit_id: String,
     display_name: String,
     source_path: String,
+    source_match_values: Vec<String>,
     target_path_template: String,
     default_enabled: bool,
     enabled: bool,
@@ -79,17 +81,145 @@ struct MigrationUnitPlan {
     category: String,
 }
 
-fn render_target_path(template: &str, target_root: &str, fallback_display_name: &str) -> String {
-    if template.trim().is_empty() {
-        return format!("{target_root}/AppData/{fallback_display_name}");
-    }
-    template.replace("{target_root}", target_root)
+#[derive(Debug, Clone)]
+struct SourcePathExpansion {
+    resolved_path: String,
+    matches: Vec<String>,
 }
 
-fn normalize_profile_unit(index: usize, raw_unit: &RelocationUnit) -> Option<MigrationUnitPlan> {
-    let source_path = raw_unit.source_path.trim();
-    if source_path.is_empty() {
+fn render_target_path(
+    template: &str,
+    target_root: &str,
+    fallback_display_name: &str,
+    source_match_values: &[String],
+) -> String {
+    let mut rendered = if template.trim().is_empty() {
+        format!("{target_root}/AppData/{fallback_display_name}")
+    } else {
+        template.to_string()
+    };
+    rendered = rendered.replace("{target_root}", target_root);
+    for (index, value) in source_match_values.iter().enumerate() {
+        let placeholder = format!("{{match_{}}}", index + 1);
+        rendered = rendered.replace(&placeholder, value);
+    }
+    rendered
+}
+
+fn contains_glob_meta(value: &str) -> bool {
+    value.contains('*') || value.contains('?') || value.contains('[')
+}
+
+fn source_path_has_glob_pattern(path: &str) -> bool {
+    path.split('/').any(contains_glob_meta)
+}
+
+fn extract_glob_matches(pattern: &str, resolved_path: &Path) -> Option<Vec<String>> {
+    let pattern_segments = pattern
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let resolved_path_text = resolved_path.to_string_lossy().to_string();
+    let resolved_segments = resolved_path_text
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    if pattern_segments.len() != resolved_segments.len() {
         return None;
+    }
+
+    let mut captures = Vec::new();
+    for (pattern_segment, resolved_segment) in pattern_segments.iter().zip(resolved_segments.iter())
+    {
+        if contains_glob_meta(pattern_segment) {
+            captures.push((*resolved_segment).to_string());
+            continue;
+        }
+        if pattern_segment != resolved_segment {
+            return None;
+        }
+    }
+
+    Some(captures)
+}
+
+fn sanitize_match_token(value: &str) -> String {
+    value.replace(':', "_")
+}
+
+fn runtime_unit_id(base_unit_id: &str, source_match_values: &[String]) -> String {
+    if source_match_values.is_empty() {
+        return base_unit_id.to_string();
+    }
+
+    let suffix = source_match_values
+        .iter()
+        .map(|value| sanitize_match_token(value))
+        .collect::<Vec<_>>()
+        .join("::");
+
+    format!("{base_unit_id}::{suffix}")
+}
+
+fn runtime_display_name(base_display_name: &str, source_match_values: &[String]) -> String {
+    if source_match_values.is_empty() {
+        return base_display_name.to_string();
+    }
+
+    format!("{base_display_name} [{}]", source_match_values.join("/"))
+}
+
+fn expand_source_path_pattern(pattern: &str) -> Vec<SourcePathExpansion> {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    if !source_path_has_glob_pattern(trimmed) {
+        return vec![SourcePathExpansion {
+            resolved_path: trimmed.to_string(),
+            matches: Vec::new(),
+        }];
+    }
+
+    let mut expansions = Vec::new();
+    let paths = match glob(trimmed) {
+        Ok(paths) => paths,
+        Err(_) => return Vec::new(),
+    };
+
+    for path_result in paths {
+        let path = match path_result {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if !metadata.is_dir() && !metadata.file_type().is_symlink() {
+            continue;
+        }
+        let captures = match extract_glob_matches(trimmed, &path) {
+            Some(captures) => captures,
+            None => continue,
+        };
+
+        expansions.push(SourcePathExpansion {
+            resolved_path: path.to_string_lossy().to_string(),
+            matches: captures,
+        });
+    }
+
+    expansions.sort_by(|left, right| left.resolved_path.cmp(&right.resolved_path));
+    expansions
+}
+
+fn normalize_profile_unit(index: usize, raw_unit: &RelocationUnit) -> Vec<MigrationUnitPlan> {
+    let source_path_pattern = raw_unit.source_path.trim();
+    if source_path_pattern.is_empty() {
+        return Vec::new();
     }
 
     let unit_id = if raw_unit.unit_id.trim().is_empty() {
@@ -104,19 +234,35 @@ fn normalize_profile_unit(index: usize, raw_unit: &RelocationUnit) -> Option<Mig
         raw_unit.display_name.trim().to_string()
     };
 
-    Some(MigrationUnitPlan {
-        unit_id,
-        display_name,
-        source_path: expand_tilde(source_path),
-        target_path_template: raw_unit.target_path_template.clone(),
-        default_enabled: raw_unit.default_enabled,
-        enabled: raw_unit.enabled,
-        risk_level: raw_unit.risk_level.clone(),
-        requires_confirmation: raw_unit.requires_confirmation,
-        blocked_reason: raw_unit.blocked_reason.clone(),
-        allow_bootstrap_if_source_missing: raw_unit.allow_bootstrap_if_source_missing,
-        category: raw_unit.category.clone(),
-    })
+    let expanded_pattern = expand_tilde(source_path_pattern);
+    let expansions = expand_source_path_pattern(&expanded_pattern);
+    if expansions.is_empty() {
+        return Vec::new();
+    }
+
+    expansions
+        .into_iter()
+        .map(|expansion| {
+            let source_match_values = expansion.matches;
+            let runtime_unit_id = runtime_unit_id(&unit_id, &source_match_values);
+            let runtime_display_name = runtime_display_name(&display_name, &source_match_values);
+
+            MigrationUnitPlan {
+                unit_id: runtime_unit_id,
+                display_name: runtime_display_name,
+                source_path: expansion.resolved_path,
+                source_match_values,
+                target_path_template: raw_unit.target_path_template.clone(),
+                default_enabled: raw_unit.default_enabled,
+                enabled: raw_unit.enabled,
+                risk_level: raw_unit.risk_level.clone(),
+                requires_confirmation: raw_unit.requires_confirmation,
+                blocked_reason: raw_unit.blocked_reason.clone(),
+                allow_bootstrap_if_source_missing: raw_unit.allow_bootstrap_if_source_missing,
+                category: raw_unit.category.clone(),
+            }
+        })
+        .collect()
 }
 
 fn profile_relocation_units(profile: &AppProfile) -> Vec<MigrationUnitPlan> {
@@ -124,7 +270,7 @@ fn profile_relocation_units(profile: &AppProfile) -> Vec<MigrationUnitPlan> {
         .relocation_units
         .iter()
         .enumerate()
-        .filter_map(|(index, unit)| normalize_profile_unit(index, unit))
+        .flat_map(|(index, unit)| normalize_profile_unit(index, unit))
         .collect::<Vec<_>>();
 
     let mut unique = Vec::new();
@@ -174,15 +320,21 @@ fn pick_relocation_unit(profile: &AppProfile, unit_id: Option<&str>) -> Option<M
 
     if let Some(unit_id) = unit_id {
         return units
-            .into_iter()
-            .find(|unit| unit.unit_id == unit_id.trim());
+            .iter()
+            .find(|unit| unit.unit_id == unit_id.trim())
+            .cloned();
     }
 
     pick_default_unit(&units)
 }
 
 fn target_path_for_unit(unit: &MigrationUnitPlan, target_root: &str) -> String {
-    render_target_path(&unit.target_path_template, target_root, &unit.display_name)
+    render_target_path(
+        &unit.target_path_template,
+        target_root,
+        &unit.display_name,
+        &unit.source_match_values,
+    )
 }
 
 fn db_error(trace_id: &str, action: &str, err: impl ToString) -> CommandError {
@@ -1504,7 +1656,13 @@ pub fn migrate_app(
     req: MigrateRequest,
     state: State<'_, AppState>,
 ) -> Result<RelocationResult, CommandError> {
-    let trace_id = new_trace_id();
+    let trace_id = req
+        .trace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(new_trace_id);
 
     if req.mode != "bootstrap" && req.mode != "migrate" {
         return Err(CommandError::new(
@@ -2743,7 +2901,13 @@ pub fn rollback_relocation(
     req: RollbackRequest,
     state: State<'_, AppState>,
 ) -> Result<RelocationResult, CommandError> {
-    let trace_id = new_trace_id();
+    let trace_id = req
+        .trace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(new_trace_id);
     let existing = state
         .db
         .get_relocation(&req.relocation_id)
@@ -2757,6 +2921,24 @@ pub fn rollback_relocation(
                 json!({ "relocation_id": req.relocation_id }),
             )
         })?;
+
+    if let Some(profile) =
+        profiles::profile_by_id(&existing.app_id).map_err(|err| profile_error(&trace_id, &err))?
+    {
+        let running = detect_running_processes(&profile);
+        if !running.is_empty() {
+            return Err(CommandError::new(
+                "PRECHECK_PROCESS_RUNNING",
+                "target app process is still running.",
+                trace_id,
+                true,
+                json!({
+                    "app_id": existing.app_id,
+                    "running_processes": running
+                }),
+            ));
+        }
+    }
 
     let source_path = Path::new(&existing.source_path);
     let target_path = Path::new(&existing.target_path);
@@ -3410,6 +3592,214 @@ mod tests {
     }
 
     #[test]
+    fn profile_relocation_units_expands_wildcard_source_paths() {
+        let dir = tempdir().expect("create temp dir");
+        let root = dir.path().join("xwechat_files");
+        let user_a_msg = root.join("user_a").join("msg");
+        let user_b_msg = root.join("user_b").join("msg");
+        fs::create_dir_all(&user_a_msg).expect("create user_a msg path");
+        fs::create_dir_all(&user_b_msg).expect("create user_b msg path");
+
+        let profile = AppProfile {
+            app_id: "wechat-non-mas".to_string(),
+            display_name: "WeChat".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
+            bundle_ids: vec![],
+            process_names: vec![],
+            relocation_units: vec![RelocationUnit {
+                unit_id: "wechat-msg-all".to_string(),
+                display_name: "WeChat Msg".to_string(),
+                source_path: format!("{}/{}", root.to_string_lossy(), "*/msg"),
+                target_path_template: "{target_root}/AppData/WeChat/{match_1}/msg".to_string(),
+                default_enabled: true,
+                enabled: true,
+                risk_level: "stable".to_string(),
+                requires_confirmation: false,
+                blocked_reason: None,
+                allow_bootstrap_if_source_missing: false,
+                category: "media".to_string(),
+            }],
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let units = profile_relocation_units(&profile);
+        assert_eq!(units.len(), 2);
+
+        let unit_ids = units
+            .iter()
+            .map(|unit| unit.unit_id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            unit_ids.iter().any(|id| id == "wechat-msg-all::user_a"),
+            "expanded units should contain user_a capture"
+        );
+        assert!(
+            unit_ids.iter().any(|id| id == "wechat-msg-all::user_b"),
+            "expanded units should contain user_b capture"
+        );
+
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.source_path == user_a_msg.to_string_lossy().as_ref()),
+            "expanded units should contain user_a source path"
+        );
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.source_path == user_b_msg.to_string_lossy().as_ref()),
+            "expanded units should contain user_b source path"
+        );
+    }
+
+    #[test]
+    fn profile_relocation_units_expands_segment_glob_patterns() {
+        let dir = tempdir().expect("create temp dir");
+        let root = dir.path().join("qq");
+        let account_a_msg = root.join("nt_qq_abcd").join("msg");
+        let account_b_msg = root.join("nt_qq_efgh").join("msg");
+        let unmatched_msg = root.join("legacy_qq").join("msg");
+        fs::create_dir_all(&account_a_msg).expect("create account a path");
+        fs::create_dir_all(&account_b_msg).expect("create account b path");
+        fs::create_dir_all(&unmatched_msg).expect("create unmatched path");
+
+        let profile = AppProfile {
+            app_id: "qq".to_string(),
+            display_name: "QQ".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
+            bundle_ids: vec![],
+            process_names: vec![],
+            relocation_units: vec![RelocationUnit {
+                unit_id: "qq-msg-all".to_string(),
+                display_name: "QQ Msg".to_string(),
+                source_path: format!("{}/{}", root.to_string_lossy(), "nt_qq_*/msg"),
+                target_path_template: "{target_root}/AppData/QQ/{match_1}/msg".to_string(),
+                default_enabled: true,
+                enabled: true,
+                risk_level: "stable".to_string(),
+                requires_confirmation: false,
+                blocked_reason: None,
+                allow_bootstrap_if_source_missing: false,
+                category: "media".to_string(),
+            }],
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let units = profile_relocation_units(&profile);
+        assert_eq!(units.len(), 2);
+        assert!(units
+            .iter()
+            .any(|unit| unit.unit_id == "qq-msg-all::nt_qq_abcd"
+                && unit.source_path == account_a_msg.to_string_lossy().as_ref()));
+        assert!(units
+            .iter()
+            .any(|unit| unit.unit_id == "qq-msg-all::nt_qq_efgh"
+                && unit.source_path == account_b_msg.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn profile_relocation_units_includes_existing_matches_without_name_special_case() {
+        let dir = tempdir().expect("create temp dir");
+        let root = dir.path().join("xwechat_files");
+        let backup_msg = root.join("Backup").join("msg");
+        let all_users_msg = root.join("all_users").join("msg");
+        let account_msg = root.join("woshibozia_a31d").join("msg");
+        fs::create_dir_all(&backup_msg).expect("create backup msg path");
+        fs::create_dir_all(&all_users_msg).expect("create all_users msg path");
+        fs::create_dir_all(&account_msg).expect("create account msg path");
+
+        let profile = AppProfile {
+            app_id: "wechat-non-mas".to_string(),
+            display_name: "WeChat".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
+            bundle_ids: vec![],
+            process_names: vec![],
+            relocation_units: vec![RelocationUnit {
+                unit_id: "wechat-msg-all".to_string(),
+                display_name: "WeChat Msg".to_string(),
+                source_path: format!("{}/{}", root.to_string_lossy(), "*/msg"),
+                target_path_template: "{target_root}/AppData/WeChat/{match_1}/msg".to_string(),
+                default_enabled: true,
+                enabled: true,
+                risk_level: "stable".to_string(),
+                requires_confirmation: false,
+                blocked_reason: None,
+                allow_bootstrap_if_source_missing: false,
+                category: "media".to_string(),
+            }],
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let units = profile_relocation_units(&profile);
+        assert_eq!(units.len(), 3);
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.unit_id == "wechat-msg-all::Backup"
+                    && unit.source_path == backup_msg.to_string_lossy().as_ref()),
+            "existing Backup/msg should be included by generic wildcard expansion"
+        );
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.unit_id == "wechat-msg-all::all_users"
+                    && unit.source_path == all_users_msg.to_string_lossy().as_ref()),
+            "existing all_users/msg should be included by generic wildcard expansion"
+        );
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.unit_id == "wechat-msg-all::woshibozia_a31d"
+                    && unit.source_path == account_msg.to_string_lossy().as_ref()),
+            "existing account msg path should be included by generic wildcard expansion"
+        );
+    }
+
+    #[test]
+    fn profile_relocation_units_skips_missing_paths_after_wildcard() {
+        let dir = tempdir().expect("create temp dir");
+        let root = dir.path().join("xwechat_files");
+        let backup_only = root.join("Backup");
+        let account_msg = root.join("woshibozia_a31d").join("msg");
+        fs::create_dir_all(&backup_only).expect("create backup-only directory");
+        fs::create_dir_all(&account_msg).expect("create account msg path");
+
+        let profile = AppProfile {
+            app_id: "wechat-non-mas".to_string(),
+            display_name: "WeChat".to_string(),
+            description_i18n: Default::default(),
+            availability: "active".to_string(),
+            blocked_reason: None,
+            bundle_ids: vec![],
+            process_names: vec![],
+            relocation_units: vec![RelocationUnit {
+                unit_id: "wechat-msg-all".to_string(),
+                display_name: "WeChat Msg".to_string(),
+                source_path: format!("{}/{}", root.to_string_lossy(), "*/msg"),
+                target_path_template: "{target_root}/AppData/WeChat/{match_1}/msg".to_string(),
+                default_enabled: true,
+                enabled: true,
+                risk_level: "stable".to_string(),
+                requires_confirmation: false,
+                blocked_reason: None,
+                allow_bootstrap_if_source_missing: false,
+                category: "media".to_string(),
+            }],
+            precheck_rules: PrecheckRules::default(),
+        };
+
+        let units = profile_relocation_units(&profile);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].source_path, account_msg.to_string_lossy().as_ref());
+    }
+
+    #[test]
     fn pick_relocation_unit_prefers_existing_default_path() {
         let dir = tempdir().expect("create temp dir");
         let missing_path = dir.path().join("missing");
@@ -3510,6 +3900,7 @@ mod tests {
             unit_id: "main-data".to_string(),
             display_name: "Main Data".to_string(),
             source_path: "~/Library/WeChat".to_string(),
+            source_match_values: vec![],
             target_path_template: "{target_root}/AppData/WeChat".to_string(),
             default_enabled: true,
             enabled: true,
@@ -3529,6 +3920,7 @@ mod tests {
             unit_id: "custom".to_string(),
             display_name: "Custom App".to_string(),
             source_path: "/tmp/custom".to_string(),
+            source_match_values: vec![],
             target_path_template: String::new(),
             default_enabled: true,
             enabled: true,
@@ -3540,6 +3932,27 @@ mod tests {
         };
         let target = target_path_for_unit(&unit, "/Volumes/External");
         assert_eq!(target, "/Volumes/External/AppData/Custom App");
+    }
+
+    #[test]
+    fn target_path_for_unit_replaces_match_placeholders() {
+        let unit = MigrationUnitPlan {
+            unit_id: "wechat-msg-all::user_a".to_string(),
+            display_name: "聊天媒体资源库".to_string(),
+            source_path: "/tmp/xwechat_files/user_a/msg".to_string(),
+            source_match_values: vec!["user_a".to_string()],
+            target_path_template: "{target_root}/AppData/WeChat/{match_1}/msg".to_string(),
+            default_enabled: true,
+            enabled: true,
+            risk_level: "stable".to_string(),
+            requires_confirmation: false,
+            blocked_reason: None,
+            allow_bootstrap_if_source_missing: false,
+            category: "media".to_string(),
+        };
+
+        let target = target_path_for_unit(&unit, "/Volumes/External");
+        assert_eq!(target, "/Volumes/External/AppData/WeChat/user_a/msg");
     }
 
     #[test]

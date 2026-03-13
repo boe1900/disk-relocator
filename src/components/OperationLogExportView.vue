@@ -8,14 +8,23 @@ import { formatCommandError } from "../utils/error";
 type UserActionType = "migrate" | "rollback" | "unknown";
 type UserActionResult = "success" | "failed" | "running";
 
+interface TimelinePathItem {
+  relocationId: string;
+  unitId: string | null;
+  sourcePath: string | null;
+  targetPath: string | null;
+}
+
 interface TimelineItem {
   key: string;
   appName: string;
+  appIds: string[];
   action: UserActionType;
   result: UserActionResult;
   startedAt: string;
   endedAt: string;
   lastStep: string;
+  paths: TimelinePathItem[];
   failedLogs: OperationLogItem[];
 }
 
@@ -110,13 +119,35 @@ function toggleFailedDetail(key: string): void {
   expandedFailedKey.value = expandedFailedKey.value === key ? null : key;
 }
 
+function extractStringDetail(details: Record<string, unknown>, key: string): string | null {
+  const raw = details[key];
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const value = raw.trim();
+  return value.length > 0 ? value : null;
+}
+
+function extractDetailFromLogs(logs: OperationLogItem[], keys: string[]): string | null {
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const details = logs[index].details ?? {};
+    for (const key of keys) {
+      const value = extractStringDetail(details, key);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
 const timelineItems = computed<TimelineItem[]>(() => {
   const groups = new Map<string, OperationLogItem[]>();
   for (const log of recordsRaw.value) {
     if (log.stage === "health") {
       continue;
     }
-    const key = `${log.trace_id}::${log.relocation_id}`;
+    const key = log.trace_id;
     const bucket = groups.get(key);
     if (bucket) {
       bucket.push(log);
@@ -138,21 +169,53 @@ const timelineItems = computed<TimelineItem[]>(() => {
 
     const first = logs[0];
     const last = logs[logs.length - 1];
-    const relocation = relocationMap.value.get(first.relocation_id);
-    const appName = relocation?.app_id ?? t("logs.unknownApp");
+    const logsByRelocation = new Map<string, OperationLogItem[]>();
+    for (const log of logs) {
+      const bucket = logsByRelocation.get(log.relocation_id) ?? [];
+      bucket.push(log);
+      logsByRelocation.set(log.relocation_id, bucket);
+    }
 
-    if (selectedApp.value !== "all" && appName !== selectedApp.value) {
+    const relocationIds = Array.from(logsByRelocation.keys());
+    const appIds = Array.from(
+      new Set(
+        relocationIds
+          .map((relocationId) => relocationMap.value.get(relocationId)?.app_id?.trim() || "")
+          .filter((value) => value.length > 0)
+      )
+    );
+    const appName = appIds.length > 0 ? appIds.join(" / ") : t("logs.unknownApp");
+
+    if (selectedApp.value !== "all" && !appIds.includes(selectedApp.value)) {
       continue;
     }
+
+    const paths: TimelinePathItem[] = relocationIds.map((relocationId) => {
+      const relocation = relocationMap.value.get(relocationId);
+      const relocationLogs = logsByRelocation.get(relocationId) ?? [];
+      const sourcePath =
+        relocation?.source_path?.trim() || extractDetailFromLogs(relocationLogs, ["source_path"]);
+      const targetPath =
+        relocation?.target_path?.trim() || extractDetailFromLogs(relocationLogs, ["target_path"]);
+      const unitId = extractDetailFromLogs(relocationLogs, ["unit_id"]);
+      return {
+        relocationId,
+        unitId,
+        sourcePath: sourcePath || null,
+        targetPath: targetPath || null
+      };
+    });
 
     items.push({
       key,
       appName,
+      appIds,
       action,
       result: inferResult(action, logs),
       startedAt: first.created_at,
       endedAt: last.created_at,
       lastStep: `${last.stage}/${last.step}`,
+      paths,
       failedLogs: logs.filter((log) => log.status === "failed")
     });
   }
@@ -240,6 +303,7 @@ onMounted(() => {
         <div
           v-for="item in timelineItems"
           :key="item.key"
+          data-test="timeline-item"
           class="rounded-xl border border-gray-200 bg-gray-50/50 p-4 space-y-3"
         >
           <div class="flex items-start justify-between gap-3">
@@ -255,6 +319,24 @@ onMounted(() => {
           <div class="text-xs text-gray-600 space-y-1">
             <div>{{ t("logs.timeRange") }}: {{ formatTime(item.startedAt) }} ~ {{ formatTime(item.endedAt) }}</div>
             <div>{{ t("logs.lastStep") }}: {{ item.lastStep }}</div>
+            <div class="space-y-2">
+              <div
+                v-for="pathItem in item.paths"
+                :key="`${item.key}-${pathItem.relocationId}`"
+                data-test="timeline-path-item"
+                class="rounded-md border border-gray-200 bg-white px-2 py-1.5"
+              >
+                <div v-if="pathItem.unitId">{{ t("logs.unitId") }}: <span class="font-mono">{{ pathItem.unitId }}</span></div>
+                <div>
+                  {{ item.action === "rollback" ? t("logs.rollbackSourcePath") : t("logs.migrateSourcePath") }}:
+                  <span class="font-mono break-all">{{ pathItem.sourcePath || t("logs.pathUnavailable") }}</span>
+                </div>
+                <div v-if="pathItem.targetPath">
+                  {{ t("logs.targetPath") }}:
+                  <span class="font-mono break-all">{{ pathItem.targetPath }}</span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div v-if="item.result === 'failed'" class="space-y-2">

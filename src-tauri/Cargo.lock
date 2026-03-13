@@ -553,6 +553,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fs2",
+ "glob",
  "notify",
  "rusqlite",
  "serde",

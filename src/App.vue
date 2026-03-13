@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   Activity,
   FileText,
@@ -32,6 +32,20 @@ interface AppCard {
   isMigrated: boolean;
   targetDisk: string | null;
   path: string;
+  paths: string[];
+  pathGroups: {
+    key: string;
+    label: string;
+    paths: string[];
+    entries: {
+      path: string;
+      displayName: string;
+      migrated: boolean;
+      pending: boolean;
+    }[];
+  }[];
+  pendingPathCount: number;
+  migratedPathCount: number;
   desc: string;
   availability: AppScanResult["availability"];
   blockedReason: string | null;
@@ -48,6 +62,7 @@ const relocations = ref<RelocationSummary[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const info = ref<string | null>(null);
+let infoTimer: number | null = null;
 
 const showModal = ref(false);
 const selectedAppId = ref("");
@@ -76,6 +91,13 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+function createBatchTraceId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `tr_batch_${crypto.randomUUID()}`;
+  }
+  return `tr_batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function parseDiskName(targetPath: string | undefined): string | null {
   if (!targetPath) {
     return null;
@@ -100,9 +122,114 @@ function pathRequiresConfirmation(path: AppScanResult["detected_paths"][number])
   return risk !== "stable";
 }
 
+function pathNeedsMigration(path: AppScanResult["detected_paths"][number]): boolean {
+  if (!isExecutablePath(path)) {
+    return false;
+  }
+  if (path.exists) {
+    return !path.is_symlink;
+  }
+  return path.allow_bootstrap_if_source_missing === true;
+}
+
 function isActiveRelocationState(state: string | undefined): boolean {
   const normalized = (state ?? "").trim().toUpperCase();
   return normalized === "HEALTHY" || normalized === "DEGRADED" || normalized === "BROKEN";
+}
+
+function pathGroupKeyFromUnitId(unitId: string | undefined): string | null {
+  const normalized = unitId?.trim();
+  if (!normalized) {
+    return null;
+  }
+  const segments = normalized
+    .split("::")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length <= 1) {
+    return null;
+  }
+  return segments[1];
+}
+
+function buildPathGroups(paths: AppScanResult["detected_paths"]): {
+  key: string;
+  label: string;
+  paths: string[];
+  entries: {
+    path: string;
+    displayName: string;
+    migrated: boolean;
+    pending: boolean;
+  }[];
+}[] {
+  const grouped = new Map<
+    string,
+    Map<
+      string,
+      {
+        path: string;
+        displayName: string;
+        migrated: boolean;
+        pending: boolean;
+      }
+    >
+  >();
+  for (const item of paths) {
+    const sourcePath = (item.path ?? "").trim();
+    if (!sourcePath) {
+      continue;
+    }
+    const matchGroup = pathGroupKeyFromUnitId(item.unit_id);
+    const key = matchGroup && matchGroup.length > 0 ? matchGroup : "__default__";
+    const groupEntries = grouped.get(key) ?? new Map();
+    const current = groupEntries.get(sourcePath);
+    const displayName = (item.display_name ?? "").trim();
+    const next = {
+      path: sourcePath,
+      displayName,
+      migrated: item.exists && item.is_symlink,
+      pending: pathNeedsMigration(item)
+    };
+    if (!current) {
+      groupEntries.set(sourcePath, next);
+    } else {
+      const pending = current.pending || next.pending;
+      groupEntries.set(sourcePath, {
+        path: sourcePath,
+        displayName: current.displayName || next.displayName,
+        pending,
+        migrated: pending ? false : current.migrated || next.migrated
+      });
+    }
+    grouped.set(key, groupEntries);
+  }
+
+  const result = Array.from(grouped.entries()).map(([key, values]) => {
+    const entries = Array.from(values.values()).sort((left, right) =>
+      left.path.localeCompare(right.path)
+    );
+    return {
+      key,
+      label:
+        key === "__default__"
+          ? t("appList.pathGroup.default")
+          : t("appList.pathGroup.account", { account: key }),
+      paths: entries.map((entry) => entry.path),
+      entries
+    };
+  });
+
+  result.sort((left, right) => {
+    if (left.key === "__default__") {
+      return -1;
+    }
+    if (right.key === "__default__") {
+      return 1;
+    }
+    return left.label.localeCompare(right.label);
+  });
+  return result;
 }
 
 const appCards = computed<AppCard[]>(() => {
@@ -134,6 +261,10 @@ const appCards = computed<AppCard[]>(() => {
     const executablePaths = app.detected_paths.filter((path) => isExecutablePath(path));
     const hasExecutableUnit = executablePaths.length > 0;
     const consideredPaths = hasExecutableUnit ? executablePaths : app.detected_paths;
+    const pathGroups = buildPathGroups(consideredPaths);
+    const paths = pathGroups.flatMap((group) => group.paths);
+    const pathEntries = pathGroups.flatMap((group) => group.entries);
+    const primaryPath = paths[0] ?? t("app.pathFallback");
     const existingPaths = consideredPaths.filter((path) => path.exists);
     const scannedSizeBytes = existingPaths.reduce((sum, path) => sum + path.size_bytes, 0);
     const hasScannedPaths = existingPaths.length > 0;
@@ -153,6 +284,8 @@ const appCards = computed<AppCard[]>(() => {
     const estimatedSavedBytes = relocationSavedBytes.get(app.app_id) ?? 0;
     const sizeBytes = hasScannedPaths ? scannedSizeBytes : isMigrated ? estimatedSavedBytes : 0;
     const sizeLabel = isMigrated ? t("appList.sizeLabelSaved") : t("appList.sizeLabelCurrent");
+    const pendingPathCount = pathEntries.filter((entry) => entry.pending).length;
+    const migratedPathCount = pathEntries.filter((entry) => entry.migrated).length;
 
     cards.push({
       id: app.app_id,
@@ -163,7 +296,11 @@ const appCards = computed<AppCard[]>(() => {
       sizeLabel,
       isMigrated,
       targetDisk: parseDiskName(relocation?.target_path),
-      path: consideredPaths[0]?.path ?? app.detected_paths[0]?.path ?? t("app.pathFallback"),
+      path: primaryPath,
+      paths,
+      pathGroups,
+      pendingPathCount,
+      migratedPathCount,
       desc: description ?? t("app.descFallback"),
       availability: app.availability,
       blockedReason,
@@ -179,6 +316,12 @@ const appCards = computed<AppCard[]>(() => {
 const selectedApp = computed(() =>
   apps.value.find((app) => app.app_id === selectedAppId.value) ?? null
 );
+const appDisplayNames = computed<Record<string, string>>(() => {
+  return apps.value.reduce<Record<string, string>>((acc, app) => {
+    acc[app.app_id] = app.display_name;
+    return acc;
+  }, {});
+});
 const systemDiskUsedPercent = computed(() => {
   const total = systemDisk.value?.total_bytes ?? 0;
   const free = systemDisk.value?.free_bytes ?? 0;
@@ -222,10 +365,31 @@ async function refreshAll(): Promise<void> {
   }
 }
 
+function stopInfoTimer(): void {
+  if (infoTimer !== null) {
+    window.clearTimeout(infoTimer);
+    infoTimer = null;
+  }
+}
+
+function clearInfo(): void {
+  stopInfoTimer();
+  info.value = null;
+}
+
+function showInfo(message: string): void {
+  info.value = message;
+  stopInfoTimer();
+  infoTimer = window.setTimeout(() => {
+    info.value = null;
+    infoTimer = null;
+  }, 6000);
+}
+
 function handleMigrateClick(appId: string): void {
   selectedAppId.value = appId;
   showModal.value = true;
-  info.value = null;
+  clearInfo();
 }
 
 async function confirmRestore(name: string): Promise<boolean> {
@@ -247,22 +411,36 @@ async function handleRestore(appId: string): Promise<void> {
     return;
   }
 
+  if (targetCard.running) {
+    error.value = t("app.messages.restoreBlockedRunning", { name: targetCard.name });
+    return;
+  }
+
   if (!(await confirmRestore(targetCard.name))) {
     return;
   }
 
-  const rollbackTarget = relocations.value.find((item) => item.app_id === appId);
-  if (!rollbackTarget) {
+  const rollbackTargets = relocations.value.filter(
+    (item) => item.app_id === appId && isActiveRelocationState(item.state)
+  );
+  if (rollbackTargets.length === 0) {
     error.value = t("app.messages.rollbackRecordMissing", { name: targetCard.name });
     return;
   }
 
   error.value = null;
-  info.value = null;
+  clearInfo();
   try {
-    const req: RollbackRequest = { relocation_id: rollbackTarget.relocation_id, force: true };
-    await invoke("rollback_relocation", { req });
-    info.value = t("app.messages.restoreDone", { name: targetCard.name });
+    const rollbackTraceId = createBatchTraceId();
+    for (const target of rollbackTargets) {
+      const req: RollbackRequest = {
+        relocation_id: target.relocation_id,
+        force: true,
+        trace_id: rollbackTraceId
+      };
+      await invoke("rollback_relocation", { req });
+    }
+    showInfo(t("app.messages.restoreDone", { name: targetCard.name }));
     await refreshAll();
   } catch (err) {
     error.value = t("app.messages.restoreFailed", { error: formatCommandError(err) });
@@ -272,7 +450,7 @@ async function handleRestore(appId: string): Promise<void> {
 function handleMigrationDone(message: string): void {
   showModal.value = false;
   selectedAppId.value = "";
-  info.value = message || t("app.messages.migrationDone", { label: "-" });
+  showInfo(message || t("app.messages.migrationDone", { label: "-" }));
   void refreshAll();
 }
 
@@ -283,6 +461,10 @@ function handleModalClose(): void {
 
 onMounted(() => {
   void refreshAll();
+});
+
+onBeforeUnmount(() => {
+  stopInfoTimer();
 });
 </script>
 
@@ -372,14 +554,22 @@ onMounted(() => {
         @migrate="handleMigrateClick"
         @restore="handleRestore"
       />
-      <HealthPanelView v-else-if="activeTab === 'health'" />
+      <HealthPanelView v-else-if="activeTab === 'health'" :app-display-names="appDisplayNames" />
       <OperationLogExportView v-else-if="activeTab === 'logs'" />
 
       <div
         v-if="info"
-        class="mx-8 mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700"
+        class="mx-8 mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700 flex items-center justify-between gap-3"
       >
-        {{ info }}
+        <span>{{ info }}</span>
+        <button
+          type="button"
+          data-test="clear-info-btn"
+          class="px-2 py-0.5 rounded border border-green-300 text-green-700 hover:bg-green-100"
+          @click="clearInfo"
+        >
+          {{ t("common.close") }}
+        </button>
       </div>
     </main>
 

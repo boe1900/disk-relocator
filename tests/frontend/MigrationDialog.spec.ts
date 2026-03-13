@@ -138,10 +138,10 @@ describe("MigrationDialog", () => {
     await finishBtn!.trigger("click");
 
     expect(wrapper.emitted("done")).toHaveLength(1);
-    expect(String(wrapper.emitted("done")?.[0]?.[0] ?? "")).toContain("wechat-non-mas");
+    expect(String(wrapper.emitted("done")?.[0]?.[0] ?? "")).toContain("WeChat");
   });
 
-  it("supports selecting multiple relocation units and sends unit_id for each request", async () => {
+  it("auto-includes all executable relocation units and sends unit_id for each request", async () => {
     invokeMock.mockResolvedValue({
       relocation_id: "reloc_unit_batch_001",
       app_id: "wechat-non-mas",
@@ -187,10 +187,8 @@ describe("MigrationDialog", () => {
 
     await flushPromises();
 
-    const unitCheckboxes = wrapper.findAll('[data-test="unit-checkbox"]');
-    expect(unitCheckboxes).toHaveLength(2);
-    expect((unitCheckboxes[0].element as HTMLInputElement).checked).toBe(true);
-    expect((unitCheckboxes[1].element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.findAll('[data-test="unit-checkbox"]')).toHaveLength(0);
+    expect(wrapper.text()).toContain("已选 2/2");
 
     const startBtn = wrapper
       .findAll("button")
@@ -222,6 +220,98 @@ describe("MigrationDialog", () => {
         })
       })
     );
+
+    vi.advanceTimersByTime(250);
+    await flushPromises();
+    const finishBtn = wrapper.findAll("button").find((btn) => btn.text().includes("完成"));
+    expect(finishBtn).toBeDefined();
+    await finishBtn!.trigger("click");
+
+    const donePayload = String(wrapper.emitted("done")?.[0]?.[0] ?? "");
+    expect(donePayload).toContain("WeChat");
+    expect(donePayload).not.toContain("wechat-non-mas / wechat-non-mas");
+  });
+
+  it("shows account tabs when multiple match_1 groups are detected", async () => {
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp({
+          detected_paths: [
+            {
+              unit_id: "wechat-msg-all::wxid_b",
+              display_name: "msg-wxid-b",
+              default_enabled: true,
+              path: "/Users/test/wechat/wxid_b/msg",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 1024
+            },
+            {
+              unit_id: "wechat-msg-all::wxid_a",
+              display_name: "msg-wxid-a",
+              default_enabled: true,
+              path: "/Users/test/wechat/wxid_a/msg",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 2048
+            }
+          ]
+        }),
+        disks
+      }
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("账号 wxid_a");
+    expect(wrapper.text()).toContain("账号 wxid_b");
+    expect(wrapper.text()).toContain("msg-wxid-a");
+    expect(wrapper.text()).not.toContain("msg-wxid-b");
+
+    const accountBTab = wrapper.findAll("button").find((btn) => btn.text().includes("账号 wxid_b"));
+    expect(accountBTab).toBeDefined();
+    await accountBTab!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("msg-wxid-b");
+    expect(wrapper.text()).not.toContain("msg-wxid-a");
+  });
+
+  it("does not show account tabs when no match_1 groups are present", async () => {
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp({
+          detected_paths: [
+            {
+              unit_id: "media-and-files",
+              display_name: "Media and Files",
+              default_enabled: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/FileStorage",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 1024
+            },
+            {
+              unit_id: "images",
+              display_name: "Images",
+              default_enabled: true,
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/Image",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 2048
+            }
+          ]
+        }),
+        disks
+      }
+    });
+    await flushPromises();
+
+    const accountTabs = wrapper.findAll("button").filter((btn) => btn.text().includes("账号 "));
+    expect(accountTabs).toHaveLength(0);
   });
 
   it("uses bootstrap mode when source is missing and rejects out-of-disk picker path", async () => {
@@ -657,7 +747,7 @@ describe("MigrationDialog", () => {
     expect(startBtn!.attributes("disabled")).toBeDefined();
   });
 
-  it("skips migration when source path is already a symlink", async () => {
+  it("hides already migrated symlink paths from selectable migration units", async () => {
     const wrapper = mount(MigrationDialog, {
       props: {
         showModal: true,
@@ -677,7 +767,8 @@ describe("MigrationDialog", () => {
     });
     await flushPromises();
 
-    expect(wrapper.text()).toContain("源目录已是软链接，已迁移");
+    expect(wrapper.text()).not.toContain("源目录已是软链接，已迁移");
+    expect(wrapper.findAll('[data-test="unit-checkbox"]')).toHaveLength(0);
     const startBtn = wrapper
       .findAll("button")
       .find((btn) => btn.text().includes("开始迁移"));
@@ -789,7 +880,7 @@ describe("MigrationDialog", () => {
     });
   });
 
-  it("keeps unit selection unchanged when clicking copy/open path actions", async () => {
+  it("keeps migration plan unchanged when clicking copy/open path actions", async () => {
     invokeMock.mockResolvedValue(undefined);
 
     const wrapper = mount(MigrationDialog, {
@@ -823,10 +914,11 @@ describe("MigrationDialog", () => {
     });
     await flushPromises();
 
-    const checkboxes = wrapper.findAll('[data-test="unit-checkbox"]');
-    expect(checkboxes).toHaveLength(2);
-    expect((checkboxes[0].element as HTMLInputElement).checked).toBe(true);
-    expect((checkboxes[1].element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.findAll('[data-test="unit-checkbox"]')).toHaveLength(0);
+    const beforeCopyButtons = wrapper.findAll('[data-test="copy-path-btn"]');
+    const beforeOpenButtons = wrapper.findAll('[data-test="open-path-btn"]');
+    expect(beforeCopyButtons).toHaveLength(2);
+    expect(beforeOpenButtons).toHaveLength(2);
 
     const copyBtn = wrapper.findAll('[data-test="copy-path-btn"]')[0];
     await copyBtn.trigger("click");
@@ -836,9 +928,10 @@ describe("MigrationDialog", () => {
     await openBtn.trigger("click");
     await flushPromises();
 
-    const latestCheckboxes = wrapper.findAll('[data-test="unit-checkbox"]');
-    expect((latestCheckboxes[0].element as HTMLInputElement).checked).toBe(true);
-    expect((latestCheckboxes[1].element as HTMLInputElement).checked).toBe(true);
+    const latestCopyButtons = wrapper.findAll('[data-test="copy-path-btn"]');
+    const latestOpenButtons = wrapper.findAll('[data-test="open-path-btn"]');
+    expect(latestCopyButtons).toHaveLength(2);
+    expect(latestOpenButtons).toHaveLength(2);
   });
 
   it("passes cleanup_backup_after_migrate=false when user disables cleanup", async () => {

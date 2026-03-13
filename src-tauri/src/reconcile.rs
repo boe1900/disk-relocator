@@ -17,6 +17,7 @@ enum SafeFixAction {
     CleanupTempPath,
     MarkHealthy,
     MarkRolledBack,
+    RecreateSourceAndMarkRolledBack,
 }
 
 impl SafeFixAction {
@@ -25,6 +26,7 @@ impl SafeFixAction {
             Self::CleanupTempPath => "cleanup_temp_path",
             Self::MarkHealthy => "mark_state_healthy",
             Self::MarkRolledBack => "mark_state_rolled_back",
+            Self::RecreateSourceAndMarkRolledBack => "recreate_source_and_mark_state_rolled_back",
         }
     }
 }
@@ -56,6 +58,30 @@ fn temp_path_for(record: &RelocationRecord) -> PathBuf {
         "{}.tmp.{}",
         record.target_path, record.relocation_id
     ))
+}
+
+fn mount_root_from_target_root(target_root: &str) -> Option<PathBuf> {
+    let trimmed = target_root.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "/Volumes" || trimmed == "/Volumes/" {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("/Volumes/") {
+        let mount_name = rest
+            .split('/')
+            .find(|segment| !segment.is_empty())
+            .map(str::to_string)?;
+        return Some(PathBuf::from(format!("/Volumes/{mount_name}")));
+    }
+    None
+}
+
+fn target_mount_online(record: &RelocationRecord) -> bool {
+    mount_root_from_target_root(&record.target_root)
+        .map(|mount_root| mount_root.exists())
+        .unwrap_or(true)
 }
 
 fn is_active_state(state: &str) -> bool {
@@ -98,14 +124,20 @@ fn resolve_link_target(source_path: &Path, raw_target: &Path) -> PathBuf {
     }
 }
 
-fn evaluate_record(record: &RelocationRecord, is_latest_for_app: bool) -> Vec<InternalIssue> {
+fn evaluate_record(record: &RelocationRecord) -> Vec<InternalIssue> {
     let mut issues = Vec::new();
     let source_path = Path::new(&record.source_path);
     let target_path = Path::new(&record.target_path);
     let backup_path = record.backup_path.as_ref().map(PathBuf::from);
     let temp_path = temp_path_for(record);
+    let backup_exists = backup_path
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let target_exists = target_path.exists();
+    let temp_exists = temp_path.exists();
 
-    if temp_path.exists() {
+    if temp_exists {
         issues.push(new_issue(
             record,
             "RECON_TEMP_PATH_RESIDUE",
@@ -120,15 +152,33 @@ fn evaluate_record(record: &RelocationRecord, is_latest_for_app: bool) -> Vec<In
     let source_metadata = match fs::symlink_metadata(source_path) {
         Ok(meta) => meta,
         Err(err) => {
-            issues.push(new_issue(
-                record,
-                "RECON_SOURCE_MISSING",
-                "critical",
-                "source path missing during reconciliation.",
-                "run rollback to restore source path, then re-check.",
-                None,
-                json!({ "source_path": record.source_path, "error": err.to_string() }),
-            ));
+            if !target_exists && !temp_exists && !backup_exists && target_mount_online(record) {
+                issues.push(new_issue(
+                    record,
+                    "RECON_SOURCE_MISSING_RECOVERABLE",
+                    "warning",
+                    "source path missing while target and backup paths are absent.",
+                    "run safe-fix to recreate an empty source path and resync metadata to ROLLED_BACK.",
+                    Some(SafeFixAction::RecreateSourceAndMarkRolledBack),
+                    json!({
+                        "source_path": record.source_path,
+                        "target_path": record.target_path,
+                        "backup_path": record.backup_path,
+                        "target_root": record.target_root,
+                        "error": err.to_string()
+                    }),
+                ));
+            } else {
+                issues.push(new_issue(
+                    record,
+                    "RECON_SOURCE_MISSING",
+                    "critical",
+                    "source path missing during reconciliation.",
+                    "run rollback to restore source path, then re-check.",
+                    None,
+                    json!({ "source_path": record.source_path, "error": err.to_string() }),
+                ));
+            }
             return issues;
         }
     };
@@ -182,24 +232,13 @@ fn evaluate_record(record: &RelocationRecord, is_latest_for_app: bool) -> Vec<In
                 }),
             ));
         } else if !is_active_state(&record.state) {
-            let (suggestion, safe_fix_action) = if is_latest_for_app {
-                (
-                    "run safe-fix to resync metadata state to HEALTHY.",
-                    Some(SafeFixAction::MarkHealthy),
-                )
-            } else {
-                (
-                    "historical relocation record detected; keep metadata unchanged to avoid duplicating active entries.",
-                    None,
-                )
-            };
             issues.push(new_issue(
                 record,
                 "RECON_STATE_STALE_ACTIVE",
                 "warning",
                 "metadata state is stale while filesystem indicates active relocation.",
-                suggestion,
-                safe_fix_action,
+                "run safe-fix to resync metadata state to HEALTHY.",
+                Some(SafeFixAction::MarkHealthy),
                 json!({
                     "state": record.state,
                     "source_path": record.source_path,
@@ -222,29 +261,14 @@ fn evaluate_record(record: &RelocationRecord, is_latest_for_app: bool) -> Vec<In
             }
         }
     } else if is_active_state(&record.state) {
-        let backup_exists = backup_path
-            .as_ref()
-            .map(|path| path.exists())
-            .unwrap_or(false);
-        if !target_path.exists() && !temp_path.exists() && !backup_exists {
-            let (suggestion, safe_fix_action) = if is_latest_for_app {
-                (
-                    "run safe-fix to resync metadata to ROLLED_BACK.",
-                    Some(SafeFixAction::MarkRolledBack),
-                )
-            } else {
-                (
-                    "historical relocation record detected; keep metadata unchanged to avoid rewriting past states.",
-                    None,
-                )
-            };
+        if !target_exists && !temp_exists && !backup_exists {
             issues.push(new_issue(
                 record,
                 "RECON_STATE_STALE_ROLLED_BACK",
                 "warning",
                 "metadata indicates active relocation but filesystem looks rolled back.",
-                suggestion,
-                safe_fix_action,
+                "run safe-fix to resync metadata to ROLLED_BACK.",
+                Some(SafeFixAction::MarkRolledBack),
                 json!({
                     "state": record.state,
                     "source_path": record.source_path,
@@ -259,6 +283,22 @@ fn evaluate_record(record: &RelocationRecord, is_latest_for_app: bool) -> Vec<In
                 "active relocation state expects source symlink, but source is not symlink.",
                 "run rollback to recover source path and clear inconsistent state.",
                 None,
+                json!({
+                    "state": record.state,
+                    "source_path": record.source_path,
+                    "target_path": record.target_path
+                }),
+            ));
+        }
+    } else if record.state == "ROLLBACK_FAILED" || record.state == "FAILED_NEEDS_ROLLBACK" {
+        if !target_exists && !temp_exists && !backup_exists {
+            issues.push(new_issue(
+                record,
+                "RECON_STATE_STALE_ROLLED_BACK",
+                "warning",
+                "rollback-failed metadata is stale while filesystem indicates rolled-back state.",
+                "run safe-fix to resync metadata to ROLLED_BACK.",
+                Some(SafeFixAction::MarkRolledBack),
                 json!({
                     "state": record.state,
                     "source_path": record.source_path,
@@ -369,6 +409,60 @@ fn apply_safe_fix(
             .map_err(|err| format!("insert health snapshot safe-fix failed: {err}"))?;
             Ok(())
         }
+        SafeFixAction::RecreateSourceAndMarkRolledBack => {
+            let source_path = Path::new(&record.source_path);
+            match fs::symlink_metadata(source_path) {
+                Ok(metadata) => {
+                    if metadata.file_type().is_symlink() {
+                        return Err(
+                            "source path is symlink while recreate-source safe-fix expects directory."
+                                .to_string(),
+                        );
+                    }
+                    if !metadata.is_dir() {
+                        return Err(
+                            "source path exists but is not a directory for recreate-source safe-fix."
+                                .to_string(),
+                        );
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir_all(source_path).map_err(|create_err| {
+                        format!("recreate source path safe-fix failed: {create_err}")
+                    })?;
+                }
+                Err(err) => {
+                    return Err(format!("inspect source path safe-fix failed: {err}"));
+                }
+            }
+
+            let observed_at = now_iso();
+            db.update_relocation_state(
+                &record.relocation_id,
+                "ROLLED_BACK",
+                "healthy",
+                trace_id,
+                None,
+                &observed_at,
+                Some(&observed_at),
+            )
+            .map_err(|err| format!("update state rolled-back safe-fix failed: {err}"))?;
+            db.insert_health_snapshot(&NewHealthSnapshot {
+                snapshot_id: new_snapshot_id(),
+                relocation_id: record.relocation_id.clone(),
+                state: "healthy".to_string(),
+                check_code: "HEALTH_RECONCILE_RECREATE_SOURCE_ROLLED_BACK".to_string(),
+                details_json: json!({
+                    "message": "reconcile safe-fix recreated empty source path and resynced state to ROLLED_BACK",
+                    "source_path": record.source_path,
+                    "data_recovered": false
+                })
+                .to_string(),
+                observed_at,
+            })
+            .map_err(|err| format!("insert health snapshot safe-fix failed: {err}"))?;
+            Ok(())
+        }
     }
 }
 
@@ -382,12 +476,15 @@ pub fn run_reconcile(
     let records = db
         .list_relocations()
         .map_err(|err| format!("list relocations for reconcile failed: {err}"))?;
-    let selected: Vec<RelocationRecord> = records.into_iter().take(limit).collect();
-    let mut latest_relocation_ids = HashSet::new();
-    let mut seen_app_ids = HashSet::new();
-    for record in selected.iter() {
-        if seen_app_ids.insert(record.app_id.clone()) {
-            latest_relocation_ids.insert(record.relocation_id.clone());
+    let mut selected = Vec::new();
+    let mut seen_pairs = HashSet::new();
+    for record in records {
+        let key = (record.app_id.clone(), record.source_path.clone());
+        if seen_pairs.insert(key) {
+            selected.push(record);
+            if selected.len() >= limit {
+                break;
+            }
         }
     }
 
@@ -396,10 +493,7 @@ pub fn run_reconcile(
     let mut safe_fixable_count = 0usize;
 
     for record in selected.iter() {
-        let found = evaluate_record(
-            record,
-            latest_relocation_ids.contains(&record.relocation_id),
-        );
+        let found = evaluate_record(record);
         for mut internal in found {
             if internal.safe_fix_action.is_some() {
                 safe_fixable_count += 1;
@@ -683,7 +777,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn reconcile_does_not_auto_fix_stale_active_for_historical_record() {
+    fn reconcile_ignores_historical_records_and_only_checks_latest_source_entry() {
         let dir = tempdir().expect("tempdir");
         let db = Database::init(dir.path().join("db")).expect("init db");
 
@@ -733,11 +827,10 @@ mod tests {
         .expect("insert latest relocation");
 
         let result = run_reconcile(&db, "tr_reconcile_hist", true, 50, false).expect("reconcile");
-        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.scanned, 1);
+        assert_eq!(result.drift_count, 0);
         assert_eq!(result.fixed_count, 0);
-        assert_eq!(result.issues[0].code, "RECON_STATE_STALE_ACTIVE");
-        assert!(result.issues[0].safe_fix_action.is_none());
-        assert!(!result.issues[0].safe_fix_applied);
+        assert!(result.issues.is_empty());
 
         let old_row = db
             .get_relocation("reloc_reconcile_hist_old")
@@ -822,6 +915,102 @@ mod tests {
         assert_eq!(result.issues[0].severity, "critical");
         assert!(!result.issues[0].safe_fix_applied);
         assert!(result.issues[0].safe_fix_action.is_none());
+    }
+
+    #[test]
+    fn reconcile_safe_fix_recreates_missing_source_when_recovery_sources_absent() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("missing-source-recreate");
+        let target = dir.path().join("missing-target-recreate");
+        assert!(!source.exists());
+        assert!(!target.exists());
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_recreate_source".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: dir.path().to_string_lossy().to_string(),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "ROLLBACK_FAILED".to_string(),
+            health_state: "broken".to_string(),
+            last_error_code: Some("ROLLBACK_RESTORE_BACKUP_FAILED".to_string()),
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let result =
+            run_reconcile(&db, "tr_reconcile_recreate_source", true, 50, false).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.safe_fixable_count, 1);
+        assert_eq!(result.fixed_count, 1);
+        assert_eq!(result.issues[0].code, "RECON_SOURCE_MISSING_RECOVERABLE");
+        assert_eq!(
+            result.issues[0].safe_fix_action.as_deref(),
+            Some("recreate_source_and_mark_state_rolled_back")
+        );
+        assert!(result.issues[0].safe_fix_applied);
+        assert!(source.is_dir());
+
+        let row = db
+            .get_relocation("reloc_reconcile_recreate_source")
+            .expect("query relocation")
+            .expect("row exists");
+        assert_eq!(row.state, "ROLLED_BACK");
+        assert_eq!(row.health_state, "healthy");
+    }
+
+    #[test]
+    fn reconcile_missing_source_keeps_critical_when_target_mount_offline() {
+        let dir = tempdir().expect("tempdir");
+        let db = Database::init(dir.path().join("db")).expect("init db");
+
+        let source = dir.path().join("missing-source-offline");
+        let mount_name = format!("reconcile_offline_{}", Uuid::new_v4().simple());
+        let target_root = format!("/Volumes/{mount_name}");
+        let target = format!("{target_root}/AppData/Telegram/media");
+        assert!(!Path::new(&target_root).exists());
+
+        let now = "2026-03-05T10:00:00Z".to_string();
+        db.insert_relocation(&NewRelocationRecord {
+            relocation_id: "reloc_reconcile_offline_mount".to_string(),
+            app_id: "telegram-desktop".to_string(),
+            mode: "migrate".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            target_root: target_root.clone(),
+            target_path: target,
+            backup_path: Some(format!("{}.bak", source.to_string_lossy())),
+            state: "ROLLBACK_FAILED".to_string(),
+            health_state: "broken".to_string(),
+            last_error_code: Some("ROLLBACK_RESTORE_BACKUP_FAILED".to_string()),
+            trace_id: "tr_seed".to_string(),
+            source_size_bytes: 0,
+            target_size_bytes: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: Some(now),
+        })
+        .expect("insert relocation");
+
+        let result =
+            run_reconcile(&db, "tr_reconcile_offline_mount", true, 50, false).expect("reconcile");
+        assert_eq!(result.drift_count, 1);
+        assert_eq!(result.safe_fixable_count, 0);
+        assert_eq!(result.fixed_count, 0);
+        assert_eq!(result.issues[0].code, "RECON_SOURCE_MISSING");
+        assert_eq!(result.issues[0].severity, "critical");
+        assert!(result.issues[0].safe_fix_action.is_none());
+        assert!(!result.issues[0].safe_fix_applied);
+        assert!(!source.exists());
     }
 
     #[test]

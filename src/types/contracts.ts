@@ -50,6 +50,7 @@ export interface MigrateRequest {
   unit_id?: string;
   target_root: string;
   mode: "bootstrap" | "migrate";
+  trace_id?: string;
   confirm_high_risk: boolean;
   cleanup_backup_after_migrate?: boolean;
 }
@@ -57,6 +58,7 @@ export interface MigrateRequest {
 export interface RollbackRequest {
   relocation_id: string;
   force: boolean;
+  trace_id?: string;
 }
 
 export interface OperationLogsRequest {
