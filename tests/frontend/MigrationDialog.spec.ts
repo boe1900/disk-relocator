@@ -141,6 +141,50 @@ describe("MigrationDialog", () => {
     expect(String(wrapper.emitted("done")?.[0]?.[0] ?? "")).toContain("WeChat");
   });
 
+  it("shows profile-configured risk warning with countdown before migration form", async () => {
+    const wrapper = mount(MigrationDialog, {
+      props: {
+        showModal: true,
+        selectedAppId: "wechat-non-mas",
+        selectedApp: makeApp({
+          migration_warning_i18n: {
+            zh: "⚠️ 高风险操作警告\\n请勿在运行时拔出外接盘。"
+          },
+          migration_warning_countdown_seconds: 3,
+          detected_paths: [
+            {
+              unit_id: "wechat-core",
+              display_name: "微信核心目录 (xwechat_files)",
+              default_enabled: true,
+              risk_level: "high",
+              path: "/Users/test/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
+              exists: true,
+              is_symlink: false,
+              size_bytes: 1024
+            }
+          ]
+        }),
+        disks
+      }
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("高风险操作警告");
+    const confirmBtn = wrapper.find('[data-test="risk-warning-confirm-btn"]');
+    expect(confirmBtn.exists()).toBe(true);
+    expect(confirmBtn.attributes("disabled")).toBeDefined();
+    expect(confirmBtn.text()).toContain("3s");
+
+    vi.advanceTimersByTime(3000);
+    await flushPromises();
+
+    expect(confirmBtn.attributes("disabled")).toBeUndefined();
+    await confirmBtn.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("开始迁移");
+  });
+
   it("auto-includes all executable relocation units and sends unit_id for each request", async () => {
     invokeMock.mockResolvedValue({
       relocation_id: "reloc_unit_batch_001",
@@ -405,7 +449,7 @@ describe("MigrationDialog", () => {
               unit_id: "media-and-files",
               display_name: "Media and Files",
               default_enabled: true,
-              requires_confirmation: true,
+              risk_level: "high",
               path: "/Users/test/Library/Containers/com.tencent.xinWeChat",
               exists: true,
               is_symlink: false,
@@ -417,6 +461,16 @@ describe("MigrationDialog", () => {
       }
     });
 
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("高风险操作警告");
+    const riskConfirmBtn = wrapper.find('[data-test="risk-warning-confirm-btn"]');
+    expect(riskConfirmBtn.exists()).toBe(true);
+    expect(riskConfirmBtn.attributes("disabled")).toBeDefined();
+    vi.advanceTimersByTime(3000);
+    await flushPromises();
+    expect(riskConfirmBtn.attributes("disabled")).toBeUndefined();
+    await riskConfirmBtn.trigger("click");
     await flushPromises();
 
     const startBtn = wrapper

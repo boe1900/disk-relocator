@@ -115,11 +115,8 @@ function isExecutablePath(path: AppScanResult["detected_paths"][number]): boolea
 }
 
 function pathRequiresConfirmation(path: AppScanResult["detected_paths"][number]): boolean {
-  if (path.requires_confirmation === true) {
-    return true;
-  }
   const risk = (path.risk_level ?? "stable").toString().toLowerCase();
-  return risk !== "stable";
+  return risk === "high";
 }
 
 function pathNeedsMigration(path: AppScanResult["detected_paths"][number]): boolean {

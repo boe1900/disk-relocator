@@ -1,6 +1,6 @@
 {
   "schema_version": "2.1.0",
-  "updated_at": "2026-03-12",
+  "updated_at": "2026-03-16",
   "engine_defaults": {
     "app_level": {
       "availability": "active",
@@ -12,7 +12,6 @@
     "unit_level": {
       "enabled": true,
       "risk_level": "stable",
-      "requires_confirmation": false,
       "allow_bootstrap_if_source_missing": false,
       "auto_health_checks": ["is_symlink", "target_exists", "rw_probe"],
       "auto_rollback": ["remove_symlink_first", "restore_backup_dir", "cleanup_incomplete_target"]
@@ -23,19 +22,25 @@
       "app_id": "wechat-non-mas",
       "display_name": "WeChat (Non-MAS)",
       "description_i18n": {
-        "zh": "迁移微信聊天媒体目录（按账号自动识别）。",
-        "en": "Migrate WeChat message media directories with account auto-discovery."
+        "zh": "迁移微信核心数据目录（xwechat_files）。",
+        "en": "Migrate WeChat core data directory (xwechat_files)."
       },
+      "migration_warning_i18n": {
+        "zh": "⚠️ 高风险操作警告\n微信将进行整体核心数据迁移。搬迁至外接硬盘后，请绝对不要在微信运行时拔出硬盘！\n拔出硬盘前，请务必先彻底退出 Mac 微信（Command + Q），否则将导致聊天记录永久损坏！",
+        "en": "⚠️ High-risk migration warning\nWeChat will migrate the whole core data directory. After migration to an external disk, never unplug the disk while WeChat is running.\nBefore unplugging the disk, fully quit WeChat on Mac (Command + Q), otherwise chat records may be permanently damaged."
+      },
+      "migration_warning_countdown_seconds": 3,
       "bundle_ids": ["com.tencent.xinWeChat"],
       "process_names": ["WeChat"],
       "units": [
         {
-          "unit_id": "wechat-msg-all",
-          "display_name": "聊天媒体资源库 (含图片/视频/文件)",
-          "category": "media",
-          "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/*/msg",
-          "target_path_template": "{target_root}/AppData/WeChat/{match_1}/msg",
-          "allow_bootstrap_if_source_missing": true
+          "unit_id": "wechat-core-xwechat-files",
+          "display_name": "微信核心目录 (xwechat_files)",
+          "category": "app-data",
+          "risk_level": "high",
+          "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
+          "target_path_template": "{target_root}/AppData/WeChat/xwechat_files",
+          "allow_bootstrap_if_source_missing": false
         }
       ]
     },

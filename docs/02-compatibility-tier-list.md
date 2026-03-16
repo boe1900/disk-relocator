@@ -9,13 +9,13 @@
 - `unit.risk_level`
   - `stable`: 默认无需额外确认
   - `cautious`: 建议提示风险，可按产品策略要求确认
-  - `high`: 必须配合 `requires_confirmation=true`
+  - `high`: 必须强提醒 + 倒计时 + 二次确认
 
-## 2. 当前策略（2026-03-12）
+## 2. 当前策略（2026-03-16）
 
 | 应用/数据类型 | 迁移单元（unit） | 处理策略 | 说明 |
 |---|---|---|---|
-| WeChat（非 MAS）聊天媒体目录 | `wechat-msg-all` | `active` + `stable` | 按账号目录通配展开，仅迁移 `msg` 目录 |
+| WeChat（非 MAS）核心目录 | `wechat-core-xwechat-files` | `active` + `high` | 整体迁移 `xwechat_files`，迁移前弹出高风险红色警告并强制倒计时确认 |
 
 ## 3. 画像最小要素
 
@@ -43,13 +43,12 @@
   "process_names": ["WeChat"],
   "units": [
     {
-      "unit_id": "wechat-msg-all",
-      "display_name": "聊天媒体资源库 (含图片/视频/文件)",
-      "category": "media",
-      "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/*/msg",
-      "target_path_template": "{target_root}/AppData/WeChat/{match_1}/msg",
-      "risk_level": "stable",
-      "requires_confirmation": false
+      "unit_id": "wechat-core-xwechat-files",
+      "display_name": "微信核心目录 (xwechat_files)",
+      "category": "app-data",
+      "source_path": "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
+      "target_path_template": "{target_root}/AppData/WeChat/xwechat_files",
+      "risk_level": "high"
     }
   ]
 }

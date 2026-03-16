@@ -37,6 +37,8 @@ pub struct AppProfile {
     pub app_id: String,
     pub display_name: String,
     pub description_i18n: BTreeMap<String, String>,
+    pub migration_warning_i18n: BTreeMap<String, String>,
+    pub migration_warning_countdown_seconds: u32,
     pub availability: String,
     pub blocked_reason: Option<String>,
     pub bundle_ids: Vec<String>,
@@ -54,7 +56,6 @@ pub struct RelocationUnit {
     pub default_enabled: bool,
     pub enabled: bool,
     pub risk_level: String,
-    pub requires_confirmation: bool,
     pub blocked_reason: Option<String>,
     pub allow_bootstrap_if_source_missing: bool,
     pub category: String,
@@ -107,8 +108,6 @@ struct RawUnitLevelDefaults {
     #[serde(default = "default_stable")]
     pub risk_level: String,
     #[serde(default = "default_false")]
-    pub requires_confirmation: bool,
-    #[serde(default = "default_false")]
     pub allow_bootstrap_if_source_missing: bool,
 }
 
@@ -117,7 +116,6 @@ impl Default for RawUnitLevelDefaults {
         Self {
             enabled: true,
             risk_level: default_stable(),
-            requires_confirmation: false,
             allow_bootstrap_if_source_missing: false,
         }
     }
@@ -137,6 +135,10 @@ struct RawAppProfile {
     pub display_name: String,
     #[serde(default)]
     pub description_i18n: BTreeMap<String, String>,
+    #[serde(default)]
+    pub migration_warning_i18n: BTreeMap<String, String>,
+    #[serde(default)]
+    pub migration_warning_countdown_seconds: Option<u32>,
     #[serde(default)]
     pub availability: String,
     #[serde(default)]
@@ -167,8 +169,6 @@ struct RawRelocationUnit {
     pub default_enabled: Option<bool>,
     #[serde(default)]
     pub risk_level: Option<String>,
-    #[serde(default)]
-    pub requires_confirmation: Option<bool>,
     #[serde(default)]
     pub blocked_reason: Option<String>,
     #[serde(default)]
@@ -289,9 +289,6 @@ fn normalize_units(
 
             let risk_level =
                 normalize_risk_level(raw_unit.risk_level.as_deref(), &unit_defaults.risk_level);
-            let requires_confirmation = raw_unit
-                .requires_confirmation
-                .unwrap_or(unit_defaults.requires_confirmation);
             let allow_bootstrap_if_source_missing = raw_unit
                 .allow_bootstrap_if_source_missing
                 .unwrap_or(unit_defaults.allow_bootstrap_if_source_missing);
@@ -312,7 +309,6 @@ fn normalize_units(
                 default_enabled,
                 enabled,
                 risk_level,
-                requires_confirmation,
                 blocked_reason: trimmed_option(raw_unit.blocked_reason),
                 allow_bootstrap_if_source_missing,
                 category,
@@ -372,6 +368,10 @@ fn normalize_profile_set(raw: RawProfileSet) -> Result<ProfileSet, String> {
             app_id,
             display_name,
             description_i18n: normalize_description_i18n(raw_profile.description_i18n),
+            migration_warning_i18n: normalize_description_i18n(raw_profile.migration_warning_i18n),
+            migration_warning_countdown_seconds: raw_profile
+                .migration_warning_countdown_seconds
+                .unwrap_or(0),
             availability,
             blocked_reason: trimmed_option(raw_profile.blocked_reason),
             bundle_ids: raw_profile.bundle_ids,
@@ -474,13 +474,6 @@ fn validate_profiles(profiles: &[AppProfile]) -> Result<(), String> {
                     profile.app_id, unit.unit_id, unit.risk_level
                 ));
             }
-
-            if unit.enabled && risk == "high" && !unit.requires_confirmation {
-                return Err(format!(
-                    "profile {} unit {} is high risk but requires_confirmation=false",
-                    profile.app_id, unit.unit_id
-                ));
-            }
         }
     }
 
@@ -559,23 +552,29 @@ mod tests {
             "wechat profile should contain bundle id com.tencent.xinWeChat"
         );
         assert!(
-            profile.precheck_rules.allow_bootstrap_if_source_missing,
-            "wechat profile should allow bootstrap for wechat-msg-all unit when source is missing"
+            !profile.precheck_rules.allow_bootstrap_if_source_missing,
+            "wechat profile should not allow bootstrap for xwechat_files unit when source is missing"
         );
         let unit = profile
             .relocation_units
             .iter()
-            .find(|unit| unit.unit_id == "wechat-msg-all" && unit.enabled)
-            .expect("wechat profile should contain enabled wechat-msg-all unit");
+            .find(|unit| unit.unit_id == "wechat-core-xwechat-files" && unit.enabled)
+            .expect("wechat profile should contain enabled wechat-core-xwechat-files unit");
         assert_eq!(
             unit.source_path,
-            "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/*/msg",
-            "wechat media unit source path should match wildcard profile spec"
+            "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files",
+            "wechat unit source path should point to xwechat_files root"
         );
         assert_eq!(
-            unit.target_path_template, "{target_root}/AppData/WeChat/{match_1}/msg",
-            "wechat media unit target path template should include match placeholder"
+            unit.target_path_template, "{target_root}/AppData/WeChat/xwechat_files",
+            "wechat unit target path template should point to xwechat_files root"
         );
+        assert_eq!(unit.risk_level, "high");
+        assert!(
+            !profile.migration_warning_i18n.is_empty(),
+            "wechat profile should include migration warning text"
+        );
+        assert_eq!(profile.migration_warning_countdown_seconds, 3);
     }
 
     #[test]

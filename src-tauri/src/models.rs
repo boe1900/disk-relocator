@@ -82,8 +82,6 @@ pub struct AppScanPath {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub risk_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub requires_confirmation: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_bootstrap_if_source_missing: Option<bool>,
@@ -101,6 +99,10 @@ pub struct AppScanResult {
     pub display_name: String,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub description_i18n: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub migration_warning_i18n: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migration_warning_countdown_seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -39,7 +39,6 @@
       "default_enabled": true,
       "enabled": true,
       "risk_level": "stable",
-      "requires_confirmation": false,
       "blocked_reason": null,
       "allow_bootstrap_if_source_missing": true,
       "category": "app-data",
@@ -251,7 +250,7 @@
 
 1. `availability in (blocked, deprecated)` 的 profile，`migrate_app` 必须返回 `PRECHECK_APP_BLOCKED`。
 2. `unit_id` 指向禁用单元（`enabled=false`）或带 `blocked_reason` 的单元，必须返回 `PRECHECK_UNIT_BLOCKED`。
-3. 选中单元 `requires_confirmation=true` 且 `confirm_high_risk=false`，必须返回 `PRECHECK_UNIT_CONFIRMATION_REQUIRED`。
+3. 选中单元 `risk_level=high` 且 `confirm_high_risk=false`，必须返回 `PRECHECK_UNIT_CONFIRMATION_REQUIRED`。
 4. `mode=bootstrap` 仅在选中单元声明 `allow_bootstrap_if_source_missing=true` 时允许执行。
 5. 若请求未传 `unit_id`，后端按以下优先级自动选择单元：
    `enabled && default_enabled && source_exists`

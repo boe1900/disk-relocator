@@ -12,7 +12,6 @@ export interface AppScanPath {
   default_enabled?: boolean;
   enabled?: boolean;
   risk_level?: "stable" | "cautious" | "high" | string;
-  requires_confirmation?: boolean;
   blocked_reason?: string;
   allow_bootstrap_if_source_missing?: boolean;
   category?: string;
@@ -26,6 +25,8 @@ export interface AppScanResult {
   app_id: string;
   display_name: string;
   description_i18n?: Record<string, string>;
+  migration_warning_i18n?: Record<string, string>;
+  migration_warning_countdown_seconds?: number;
   icon_path?: string | null;
   icon_data_url?: string | null;
   availability: "active" | "blocked" | "deprecated";

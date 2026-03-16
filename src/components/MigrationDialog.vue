@@ -53,7 +53,7 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "done", message: string): void;
 }>();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const migrationStep = ref(0); // 0: setup, 1: migrating, 2: success
 const progress = ref(0);
@@ -67,9 +67,12 @@ const error = ref<string | null>(null);
 const successResults = ref<RelocationResult[]>([]);
 const copiedPathKey = ref<string | null>(null);
 const activePlanGroupKey = ref("");
+const showRiskWarningModal = ref(false);
+const warningCountdownRemaining = ref(0);
 
 let progressTimer: number | null = null;
 let copyFeedbackTimer: number | null = null;
+let warningCountdownTimer: number | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -205,10 +208,7 @@ function summarizeSource(app: AppScanResult, path: AppScanPath, index: number): 
     unitLabel: resolveUnitLabel(app, path, index),
     enabled,
     riskLevel,
-    requiresConfirmation:
-      path.requires_confirmation !== undefined
-        ? path.requires_confirmation
-        : riskLevel !== "stable",
+    requiresConfirmation: riskLevel.toLowerCase() === "high",
     blockedReason,
     allowBootstrapIfSourceMissing: path.allow_bootstrap_if_source_missing === true
   };
@@ -400,6 +400,43 @@ const selectedAppSizeText = computed(() =>
   )
 );
 
+const riskWarningMessage = computed(() => {
+  const warning = props.selectedApp?.migration_warning_i18n;
+  const fallback = needsRiskConfirmation.value ? t("migrationDialog.riskWarning.defaultMessage") : "";
+  if (!warning) {
+    return fallback;
+  }
+  const activeLocale = locale.value.toLowerCase();
+  const localeBase = activeLocale.split("-")[0];
+  const direct = warning[activeLocale];
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const base = warning[localeBase];
+  if (typeof base === "string" && base.trim()) {
+    return base.trim();
+  }
+  const profileFallback = warning.zh ?? warning.en;
+  if (typeof profileFallback === "string" && profileFallback.trim()) {
+    return profileFallback.trim();
+  }
+  return fallback;
+});
+
+const riskWarningCountdownSeconds = computed(() => {
+  const raw = props.selectedApp?.migration_warning_countdown_seconds;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return 3;
+  }
+  const normalized = Math.floor(raw);
+  if (normalized <= 0) {
+    return 0;
+  }
+  return normalized;
+});
+
+const hasRiskWarning = computed(() => needsRiskConfirmation.value);
+
 const canStart = computed(() => {
   if (!props.selectedApp) {
     return false;
@@ -429,11 +466,52 @@ function resetDialogState(): void {
   successResults.value = [];
   copiedPathKey.value = null;
   activePlanGroupKey.value = "";
+  showRiskWarningModal.value = false;
+  warningCountdownRemaining.value = 0;
   stopCopyFeedbackTimer();
+  stopWarningCountdownTimer();
 
   const defaultDisk = candidateDisks.value[0]?.mount_point ?? "";
   targetDiskMount.value = defaultDisk;
   targetRoot.value = defaultDisk;
+}
+
+function stopWarningCountdownTimer(): void {
+  if (warningCountdownTimer !== null) {
+    window.clearInterval(warningCountdownTimer);
+    warningCountdownTimer = null;
+  }
+}
+
+function armRiskWarningIfNeeded(): void {
+  stopWarningCountdownTimer();
+  if (!hasRiskWarning.value) {
+    showRiskWarningModal.value = false;
+    warningCountdownRemaining.value = 0;
+    return;
+  }
+
+  showRiskWarningModal.value = true;
+  warningCountdownRemaining.value = Math.max(0, riskWarningCountdownSeconds.value);
+  if (warningCountdownRemaining.value <= 0) {
+    return;
+  }
+
+  warningCountdownTimer = window.setInterval(() => {
+    if (warningCountdownRemaining.value <= 1) {
+      warningCountdownRemaining.value = 0;
+      stopWarningCountdownTimer();
+      return;
+    }
+    warningCountdownRemaining.value -= 1;
+  }, 1000);
+}
+
+function onConfirmRiskWarning(): void {
+  if (warningCountdownRemaining.value > 0) {
+    return;
+  }
+  showRiskWarningModal.value = false;
 }
 
 watch(
@@ -441,7 +519,12 @@ watch(
   ([show]) => {
     if (show) {
       resetDialogState();
+      armRiskWarningIfNeeded();
+      return;
     }
+    stopWarningCountdownTimer();
+    showRiskWarningModal.value = false;
+    warningCountdownRemaining.value = 0;
   },
   { immediate: true }
 );
@@ -627,6 +710,7 @@ function onFinish(): void {
 onBeforeUnmount(() => {
   stopProgressAnimation();
   stopCopyFeedbackTimer();
+  stopWarningCountdownTimer();
 });
 </script>
 
@@ -636,7 +720,44 @@ onBeforeUnmount(() => {
     class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto"
   >
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col my-auto">
-      <template v-if="migrationStep === 0">
+      <template v-if="showRiskWarningModal">
+        <div class="p-6 border-b border-red-200 bg-red-50 flex items-start gap-4">
+          <div class="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center flex-shrink-0">
+            <AlertCircle :size="24" />
+          </div>
+          <div>
+            <h2 class="text-xl font-bold text-red-700">
+              {{ t("migrationDialog.riskWarning.title") }}
+            </h2>
+            <p class="text-sm text-red-700 mt-1 whitespace-pre-line">{{ riskWarningMessage }}</p>
+          </div>
+        </div>
+        <div class="p-4 border-t border-red-100 flex justify-end gap-3 bg-white">
+          <button
+            type="button"
+            @click="emit('close')"
+            class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+          >
+            {{ t("common.cancelled") }}
+          </button>
+          <button
+            type="button"
+            data-test="risk-warning-confirm-btn"
+            :disabled="warningCountdownRemaining > 0"
+            @click="onConfirmRiskWarning"
+            class="px-6 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg font-medium transition-colors"
+          >
+            {{
+              warningCountdownRemaining > 0
+                ? t("migrationDialog.riskWarning.confirmWithCountdown", {
+                    seconds: warningCountdownRemaining
+                  })
+                : t("migrationDialog.riskWarning.confirm")
+            }}
+          </button>
+        </div>
+      </template>
+      <template v-else-if="migrationStep === 0">
         <div class="p-6 border-b border-gray-100 flex items-start gap-4">
           <div class="w-12 h-12 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center flex-shrink-0">
             <ArrowRightLeft :size="24" />
@@ -845,7 +966,7 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <div v-if="migrationStep === 1" class="p-10 flex flex-col items-center justify-center text-center">
+      <div v-else-if="migrationStep === 1" class="p-10 flex flex-col items-center justify-center text-center">
         <div class="w-16 h-16 border-4 border-gray-100 border-t-blue-500 rounded-full animate-spin mb-6"></div>
         <h2 class="text-xl font-bold text-gray-900 mb-2">{{ t("migrationDialog.migratingTitle") }}</h2>
         <p class="text-sm text-gray-500 mb-6">
@@ -861,7 +982,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="migrationStep === 2" class="p-10 flex flex-col items-center justify-center text-center">
+      <div v-else-if="migrationStep === 2" class="p-10 flex flex-col items-center justify-center text-center">
         <div class="w-16 h-16 bg-green-100 text-green-500 rounded-full flex items-center justify-center mb-6">
           <CheckCircle2 :size="32" />
         </div>

@@ -167,6 +167,13 @@ const messages: Record<Locale, MessageTree> = {
           "备份目录已存在：{path}。为避免覆盖，已停止迁移。请先处理该目录后再试。",
         backupPathExistsNoPath: "备份目录已存在。为避免覆盖，已停止迁移。请先处理该目录后再试。"
       },
+      riskWarning: {
+        title: "高风险操作警告",
+        defaultMessage:
+          "当前迁移包含高风险目录。迁移到外接盘后，请勿在应用运行时拔盘；拔盘前请先彻底退出应用（Command + Q），否则可能导致数据损坏。",
+        confirm: "我已知晓风险，继续",
+        confirmWithCountdown: "我已知晓风险（{seconds}s）"
+      },
       doneMessage: "迁移完成：{label}",
       fallbackLabel: "目标应用"
     },
@@ -423,6 +430,13 @@ const messages: Record<Locale, MessageTree> = {
           "Backup directory already exists: {path}. Migration is stopped to avoid overwriting. Handle this directory and retry.",
         backupPathExistsNoPath:
           "Backup directory already exists. Migration is stopped to avoid overwriting. Handle this directory and retry."
+      },
+      riskWarning: {
+        title: "High-Risk Migration Warning",
+        defaultMessage:
+          "This migration includes high-risk data directories. After moving to an external disk, never unplug while the app is running. Fully quit the app (Command + Q) before unplugging, or data may be damaged.",
+        confirm: "I understand, continue",
+        confirmWithCountdown: "I understand ({seconds}s)"
       },
       doneMessage: "Migration completed: {label}",
       fallbackLabel: "target app"
