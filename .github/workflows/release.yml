@@ -140,7 +140,7 @@ jobs:
             artifact_suffix: aarch64
             upload_profiles: true
           - arch_label: Intel
-            runner: macos-13
+            runner: macos-15-intel
             rust_target: x86_64-apple-darwin
             artifact_suffix: x86_64
             upload_profiles: false
