@@ -31,7 +31,6 @@ interface AppCard {
   desc: string;
   availability: "active" | "blocked" | "deprecated";
   blockedReason?: string | null;
-  requiresConfirmation?: boolean;
   hasExecutableUnit?: boolean;
   running: boolean;
 }
@@ -72,9 +71,6 @@ function migrationHint(app: AppCard): string {
   }
   if (app.running) {
     return t("appList.hint.running");
-  }
-  if (app.requiresConfirmation) {
-    return t("appList.hint.requiresConfirmation");
   }
   if (app.isMigrated) {
     return t("appList.hint.migrated");
@@ -371,12 +367,6 @@ onBeforeUnmount(() => {
               class="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-medium"
             >
               {{ t("appList.status.blocked") }}
-            </span>
-            <span
-              v-else-if="app.requiresConfirmation"
-              class="bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full font-medium"
-            >
-              {{ t("appList.status.requiresConfirmation") }}
             </span>
           </div>
           <p class="text-sm text-gray-500 mt-1">{{ app.desc }}</p>

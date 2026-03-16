@@ -35,7 +35,6 @@ interface AppCard {
   desc: string;
   availability: "active" | "blocked" | "deprecated";
   blockedReason?: string | null;
-  requiresConfirmation?: boolean;
   hasExecutableUnit?: boolean;
   running: boolean;
 }
@@ -271,7 +270,7 @@ describe("AppListView", () => {
     expect(wrapper.text()).not.toContain("已外存至");
   });
 
-  it("shows confirmation badge and hint for risky app", () => {
+  it("does not show confirmation badge on app list", () => {
     const wrapper = mount(AppListView, {
       props: {
         apps: [
@@ -286,7 +285,6 @@ describe("AppListView", () => {
             path: "~/risk",
             desc: "desc",
             availability: "active",
-            requiresConfirmation: true,
             running: false
           }
         ],
@@ -295,8 +293,8 @@ describe("AppListView", () => {
       }
     });
 
-    expect(wrapper.text()).toContain("需确认");
-    expect(wrapper.text()).toContain("包含需确认的数据单元，迁移前请确认风险");
+    expect(wrapper.text()).not.toContain("需确认");
+    expect(wrapper.text()).toContain("可直接迁移");
   });
 
   it("disables migration for deprecated app and app without executable units", () => {

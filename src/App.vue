@@ -49,7 +49,6 @@ interface AppCard {
   desc: string;
   availability: AppScanResult["availability"];
   blockedReason: string | null;
-  requiresConfirmation: boolean;
   hasExecutableUnit: boolean;
   running: boolean;
 }
@@ -112,11 +111,6 @@ function parseDiskName(targetPath: string | undefined): string | null {
 function isExecutablePath(path: AppScanResult["detected_paths"][number]): boolean {
   const blocked = path.blocked_reason?.trim();
   return path.enabled !== false && !blocked;
-}
-
-function pathRequiresConfirmation(path: AppScanResult["detected_paths"][number]): boolean {
-  const risk = (path.risk_level ?? "stable").toString().toLowerCase();
-  return risk === "high";
 }
 
 function pathNeedsMigration(path: AppScanResult["detected_paths"][number]): boolean {
@@ -268,9 +262,6 @@ const appCards = computed<AppCard[]>(() => {
     const isMigrated = hasExecutableUnit
       ? executablePaths.every((path) => path.exists && path.is_symlink)
       : existingPaths.some((path) => path.is_symlink);
-    const requiresConfirmation = hasExecutableUnit
-      ? executablePaths.some((path) => pathRequiresConfirmation(path))
-      : false;
     const blockedReason = app.blocked_reason?.trim() || null;
     const activeLocale = locale.value.toLowerCase();
     const localeBase = activeLocale.split("-")[0];
@@ -301,7 +292,6 @@ const appCards = computed<AppCard[]>(() => {
       desc: description ?? t("app.descFallback"),
       availability: app.availability,
       blockedReason,
-      requiresConfirmation,
       hasExecutableUnit,
       running: app.running
     });
