@@ -909,6 +909,58 @@ mod tests {
     }
 
     #[test]
+    fn qq_profile_has_expected_bundle_process_and_unit_paths() {
+        let profile = profile_by_id("qq-nt")
+            .expect("load profiles")
+            .expect("qq profile should exist");
+        assert_eq!(profile.availability, "active");
+        assert!(
+            profile.bundle_ids.contains(&"com.tencent.qq".to_string()),
+            "qq profile should contain bundle id com.tencent.qq"
+        );
+        assert!(
+            profile.process_names.contains(&"QQ".to_string()),
+            "qq profile should contain process name QQ"
+        );
+        assert!(
+            !profile.migration_warning_i18n.is_empty(),
+            "qq profile should include migration warning text"
+        );
+        assert_eq!(
+            profile.migration_warning_countdown_seconds, 3,
+            "qq profile should configure 3-second warning countdown"
+        );
+
+        let unit = profile
+            .relocation_units
+            .iter()
+            .find(|unit| unit.unit_id == "qq-root" && unit.enabled)
+            .expect("qq profile should contain enabled qq-root unit");
+
+        assert_eq!(
+            unit.category, "root_entity",
+            "qq-root unit category should match profile spec"
+        );
+        assert_eq!(
+            unit.risk_level, "high",
+            "qq-root unit risk level should be high"
+        );
+        assert_eq!(
+            unit.source_path,
+            "~/Library/Containers/com.tencent.qq/Data/Library/Application Support/QQ/nt_qq_*",
+            "qq-root unit source path should match profile spec"
+        );
+        assert_eq!(
+            unit.target_path_template, "{target_root}/AppData/QQ_NT/{match_1}",
+            "qq-root unit target path template should match profile spec"
+        );
+        assert!(
+            !unit.allow_bootstrap_if_source_missing,
+            "qq-root unit should not allow bootstrap when source is missing"
+        );
+    }
+
+    #[test]
     fn active_profiles_require_enabled_units_and_valid_paths() {
         let profiles = list_profiles().expect("load profiles");
         for profile in profiles {
