@@ -1,8 +1,16 @@
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, SystemTime};
 
 const PROFILES_JSON: &str = include_str!("../../specs/v1/app-profiles.json");
+const REMOTE_PROFILES_URL: &str =
+    "https://github.com/boe1900/disk-relocator/releases/latest/download/app-profiles.json";
+const PROFILES_CACHE_FILE_NAME: &str = "app-profiles-cache.json";
+const PROFILES_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+const PROFILES_FETCH_TIMEOUT_SECS: u64 = 5;
 
 fn default_false() -> bool {
     false
@@ -486,9 +494,131 @@ fn parse_profile_set(payload: &str, source: &str) -> Result<ProfileSet, String> 
         .and_then(normalize_profile_set)
 }
 
-fn profile_store() -> Result<&'static RwLock<ProfileSet>, String> {
+fn profiles_cache_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(PROFILES_CACHE_FILE_NAME)
+}
+
+fn cache_is_fresh(cache_path: &Path, cache_ttl: Duration) -> bool {
+    let metadata = match fs::metadata(cache_path) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let modified = match metadata.modified() {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    match SystemTime::now().duration_since(modified) {
+        Ok(age) => age <= cache_ttl,
+        Err(_) => true,
+    }
+}
+
+fn read_cached_profile_set(
+    app_data_dir: &Path,
+    cache_ttl: Duration,
+    require_fresh: bool,
+) -> Option<Result<ProfileSet, String>> {
+    let cache_path = profiles_cache_path(app_data_dir);
+    if require_fresh && !cache_is_fresh(&cache_path, cache_ttl) {
+        return None;
+    }
+    let payload = match fs::read_to_string(&cache_path) {
+        Ok(value) => value,
+        Err(err) => return Some(Err(format!("failed to read cache {cache_path:?}: {err}"))),
+    };
+    Some(parse_profile_set(&payload, "cached app-profiles.json"))
+}
+
+fn fetch_remote_profile_payload() -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(PROFILES_FETCH_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(PROFILES_FETCH_TIMEOUT_SECS))
+        .build()
+        .map_err(|err| format!("failed to build profile fetch client: {err}"))?;
+    let response = client
+        .get(REMOTE_PROFILES_URL)
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("disk-relocator/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .map_err(|err| format!("failed to fetch remote profile: {err}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "failed to fetch remote profile: http {}",
+            response.status()
+        ));
+    }
+
+    response
+        .text()
+        .map_err(|err| format!("failed to decode remote profile payload: {err}"))
+}
+
+fn write_profile_cache(app_data_dir: &Path, payload: &str) -> Result<(), String> {
+    let cache_path = profiles_cache_path(app_data_dir);
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create cache directory {parent:?}: {err}"))?;
+    }
+    fs::write(&cache_path, payload)
+        .map_err(|err| format!("failed to write profile cache {cache_path:?}: {err}"))
+}
+
+fn load_profile_set_with_remote_fetch<F>(
+    app_data_dir: &Path,
+    cache_ttl: Duration,
+    remote_fetch: F,
+) -> Result<ProfileSet, String>
+where
+    F: FnOnce() -> Result<String, String>,
+{
+    if let Some(cached) = read_cached_profile_set(app_data_dir, cache_ttl, true) {
+        match cached {
+            Ok(set) => return Ok(set),
+            Err(err) => eprintln!("[profiles] ignore invalid fresh cache: {err}"),
+        }
+    }
+
+    match remote_fetch() {
+        Ok(payload) => match parse_profile_set(&payload, "remote app-profiles.json") {
+            Ok(set) => {
+                if let Err(err) = write_profile_cache(app_data_dir, &payload) {
+                    eprintln!("[profiles] write cache skipped: {err}");
+                }
+                return Ok(set);
+            }
+            Err(err) => eprintln!("[profiles] ignore invalid remote profile: {err}"),
+        },
+        Err(err) => eprintln!("[profiles] remote profile fetch failed: {err}"),
+    }
+
+    if let Some(cached) = read_cached_profile_set(app_data_dir, cache_ttl, false) {
+        match cached {
+            Ok(set) => return Ok(set),
+            Err(err) => eprintln!("[profiles] ignore invalid stale cache: {err}"),
+        }
+    }
+
+    parse_profile_set(PROFILES_JSON, "embedded app-profiles.json")
+}
+
+fn load_profile_set_for_app(app_data_dir: &Path) -> Result<ProfileSet, String> {
+    load_profile_set_with_remote_fetch(
+        app_data_dir,
+        Duration::from_secs(PROFILES_CACHE_TTL_SECS),
+        fetch_remote_profile_payload,
+    )
+}
+
+fn profile_store(app_data_dir: Option<&Path>) -> Result<&'static RwLock<ProfileSet>, String> {
     let parsed = PROFILE_STORE.get_or_init(|| {
-        parse_profile_set(PROFILES_JSON, "embedded app-profiles.json").map(RwLock::new)
+        let profile_set = match app_data_dir {
+            Some(dir) => load_profile_set_for_app(dir),
+            None => parse_profile_set(PROFILES_JSON, "embedded app-profiles.json"),
+        }?;
+        Ok(RwLock::new(profile_set))
     });
 
     match parsed {
@@ -497,13 +627,13 @@ fn profile_store() -> Result<&'static RwLock<ProfileSet>, String> {
     }
 }
 
-pub fn initialize_profile_store() -> Result<(), String> {
-    let _ = profile_store()?;
+pub fn initialize_profile_store(app_data_dir: &Path) -> Result<(), String> {
+    let _ = profile_store(Some(app_data_dir))?;
     Ok(())
 }
 
 pub fn list_profiles() -> Result<Vec<AppProfile>, String> {
-    let store = profile_store()?;
+    let store = profile_store(None)?;
     let guard = store
         .read()
         .map_err(|_| "profile store poisoned while listing profiles".to_string())?;
@@ -511,7 +641,7 @@ pub fn list_profiles() -> Result<Vec<AppProfile>, String> {
 }
 
 pub fn profile_by_id(app_id: &str) -> Result<Option<AppProfile>, String> {
-    let store = profile_store()?;
+    let store = profile_store(None)?;
     let guard = store
         .read()
         .map_err(|_| "profile store poisoned while looking up profile".to_string())?;
@@ -525,6 +655,29 @@ pub fn profile_by_id(app_id: &str) -> Result<Option<AppProfile>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::thread;
+    use tempfile::tempdir;
+
+    fn profile_payload_for(app_id: &str) -> String {
+        format!(
+            r#"{{
+  "profiles": [
+    {{
+      "app_id": "{app_id}",
+      "display_name": "{app_id}",
+      "units": [
+        {{
+          "unit_id": "main",
+          "source_path": "~/Library/{app_id}",
+          "target_path_template": "{{target_root}}/AppData/{app_id}"
+        }}
+      ]
+    }}
+  ]
+}}"#
+        )
+    }
 
     #[test]
     fn list_profiles_has_unique_app_ids() {
@@ -537,6 +690,91 @@ mod tests {
                 profile.app_id
             );
         }
+    }
+
+    #[test]
+    fn load_profile_set_uses_fresh_cache_without_remote_fetch() {
+        let dir = tempdir().expect("create temp dir");
+        let app_data_dir = dir.path();
+        let payload = profile_payload_for("cache-app");
+        fs::write(profiles_cache_path(app_data_dir), payload).expect("write cache");
+
+        let remote_called = Cell::new(false);
+        let set = load_profile_set_with_remote_fetch(
+            app_data_dir,
+            Duration::from_secs(PROFILES_CACHE_TTL_SECS),
+            || {
+                remote_called.set(true);
+                Err("should not fetch".to_string())
+            },
+        )
+        .expect("load profile set");
+
+        assert!(
+            !remote_called.get(),
+            "fresh cache should bypass remote fetch"
+        );
+        assert!(
+            set.profiles
+                .iter()
+                .any(|profile| profile.app_id == "cache-app"),
+            "cache payload should be used"
+        );
+    }
+
+    #[test]
+    fn load_profile_set_uses_remote_and_refreshes_cache_when_cache_stale() {
+        let dir = tempdir().expect("create temp dir");
+        let app_data_dir = dir.path();
+        fs::write(
+            profiles_cache_path(app_data_dir),
+            profile_payload_for("stale-app"),
+        )
+        .expect("write stale cache");
+        thread::sleep(Duration::from_millis(5));
+
+        let set = load_profile_set_with_remote_fetch(app_data_dir, Duration::from_secs(0), || {
+            Ok(profile_payload_for("remote-app"))
+        })
+        .expect("load profile set");
+
+        assert!(
+            set.profiles
+                .iter()
+                .any(|profile| profile.app_id == "remote-app"),
+            "remote payload should be used when cache is stale"
+        );
+
+        let refreshed_cache =
+            fs::read_to_string(profiles_cache_path(app_data_dir)).expect("read refreshed cache");
+        assert!(
+            refreshed_cache.contains("\"remote-app\""),
+            "remote payload should refresh cache contents"
+        );
+    }
+
+    #[test]
+    fn load_profile_set_falls_back_to_stale_cache_when_remote_fetch_fails() {
+        let dir = tempdir().expect("create temp dir");
+        let app_data_dir = dir.path();
+        fs::write(
+            profiles_cache_path(app_data_dir),
+            profile_payload_for("stale-app"),
+        )
+        .expect("write stale cache");
+        thread::sleep(Duration::from_millis(5));
+
+        let set = load_profile_set_with_remote_fetch(app_data_dir, Duration::from_secs(0), || {
+            Err("offline".to_string())
+        })
+        .expect("load profile set");
+
+        assert!(
+            set.profiles
+                .iter()
+                .any(|profile| profile.app_id == "stale-app"),
+            "stale cache should be used when remote fetch fails"
+        );
     }
 
     #[test]

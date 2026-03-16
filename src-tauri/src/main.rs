@@ -23,7 +23,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
-            profiles::initialize_profile_store()
+            profiles::initialize_profile_store(&app_data_dir)
                 .map_err(|err| format!("profile initialization failed: {err}"))?;
             let database = db::Database::init(app_data_dir.clone())?;
             let recovery_summary = recovery::recover_unfinished_relocations(&database)

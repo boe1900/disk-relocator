@@ -29,8 +29,10 @@ Disk Relocator 是一个基于 Vue 3 + Tauri + Rust 的 macOS 桌面工具，用
 
 ## App Profiles 策略
 
-当前版本仅使用内置 `specs/v1/app-profiles.json`，不支持远程自动更新。  
-新增 app 画像的标准流程是：修改内置 profile 并发布新版本。
+当前版本优先加载远程 profile：  
+`https://github.com/boe1900/disk-relocator/releases/latest/download/app-profiles.json`  
+并按 `远程缓存 -> 本地缓存 -> 内置 profile` 回退。  
+新增 app 画像的标准流程是：更新 `specs/v1/app-profiles.json` 并随 Release 发布同名资产。
 
 ### 新增 App 画像流程
 
@@ -52,6 +54,7 @@ Disk Relocator 是一个基于 Vue 3 + Tauri + Rust 的 macOS 桌面工具，用
 
 发布工作流会自动执行 `npm run check:release`，并上传：
 - `.dmg` 安装包
+- `app-profiles.json`（用于客户端远程画像拉取）
 
 ## 使用流程（用户视角）
 

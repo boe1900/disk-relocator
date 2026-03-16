@@ -265,6 +265,12 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           args: --target aarch64-apple-darwin --bundles dmg
 
+      - name: Upload app-profiles asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" specs/v1/app-profiles.json --clobber
+
       - name: Cleanup notarization key file
         if: ${{ always() && needs.prepare.outputs.sign_and_notarize == 'true' && steps.apple-secrets.outputs.apple_api_key_path != '' }}
         shell: bash
