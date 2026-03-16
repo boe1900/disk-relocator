@@ -126,9 +126,24 @@ jobs:
           echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
 
   publish:
-    name: Build And Publish macOS (Apple Silicon)
-    runs-on: macos-latest
+    name: Build And Publish macOS (${{ matrix.arch_label }})
+    runs-on: ${{ matrix.runner }}
     needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - arch_label: Apple Silicon
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+            artifact_suffix: aarch64
+            upload_profiles: true
+          - arch_label: Intel
+            runner: macos-13
+            rust_target: x86_64-apple-darwin
+            artifact_suffix: x86_64
+            upload_profiles: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -145,7 +160,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.rust_target }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -241,11 +256,11 @@ jobs:
           releaseName: "Disk Relocator ${{ needs.prepare.outputs.tag }}"
           releaseBody: |
             Automated release for `${{ needs.prepare.outputs.tag }}`.
-            Built from commit `${{ github.sha }}`.
+            Built for `${{ matrix.rust_target }}` from commit `${{ github.sha }}`.
           generateReleaseNotes: true
           releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
-          args: --target aarch64-apple-darwin --bundles dmg
+          args: --target ${{ matrix.rust_target }} --bundles dmg
 
       - name: Build and upload release assets (unsigned)
         if: ${{ needs.prepare.outputs.sign_and_notarize != 'true' }}
@@ -259,13 +274,14 @@ jobs:
           releaseName: "Disk Relocator ${{ needs.prepare.outputs.tag }}"
           releaseBody: |
             Automated release for `${{ needs.prepare.outputs.tag }}`.
-            Built from commit `${{ github.sha }}`.
+            Built for `${{ matrix.rust_target }}` from commit `${{ github.sha }}`.
           generateReleaseNotes: true
           releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
-          args: --target aarch64-apple-darwin --bundles dmg
+          args: --target ${{ matrix.rust_target }} --bundles dmg
 
       - name: Upload app-profiles asset
+        if: ${{ matrix.upload_profiles }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -281,9 +297,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          files=(src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg/*.dmg)
           if [[ ${#files[@]} -eq 0 ]]; then
-            echo "No dmg produced under bundle/dmg" >&2
+            echo "No dmg produced under bundle/dmg for target ${{ matrix.rust_target }}" >&2
             exit 1
           fi
           printf '%s\n' "${files[@]}"
@@ -291,8 +307,8 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: disk-relocator-${{ needs.prepare.outputs.tag }}-dmg-aarch64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          name: disk-relocator-${{ needs.prepare.outputs.tag }}-dmg-${{ matrix.artifact_suffix }}
+          path: src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - name: Publish summary
@@ -303,6 +319,8 @@ jobs:
             echo ""
             echo "- tag: \`${{ needs.prepare.outputs.tag }}\`"
             echo "- version: \`${{ needs.prepare.outputs.version }}\`"
+            echo "- architecture: \`${{ matrix.arch_label }}\`"
+            echo "- rust target: \`${{ matrix.rust_target }}\`"
             echo "- release draft: \`${{ needs.prepare.outputs.draft }}\`"
             echo "- prerelease: \`${{ needs.prepare.outputs.prerelease }}\`"
             echo "- sign and notarize: \`${{ needs.prepare.outputs.sign_and_notarize }}\`"

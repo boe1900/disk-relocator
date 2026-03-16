@@ -975,7 +975,9 @@ mod tests {
             .expect("feishu profile should exist");
         assert_eq!(profile.availability, "active");
         assert!(
-            profile.bundle_ids.contains(&"com.electron.lark".to_string()),
+            profile
+                .bundle_ids
+                .contains(&"com.electron.lark".to_string()),
             "feishu profile should contain bundle id com.electron.lark"
         );
         assert!(

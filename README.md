@@ -4,7 +4,7 @@ Disk Relocator 是一个基于 Vue 3 + Tauri + Rust 的 macOS 桌面工具，用
 
 ## 适用范围
 
-- 平台：macOS（当前以 Apple Silicon 为目标）
+- 平台：macOS（支持 Apple Silicon 与 Intel）
 - 典型场景：微信等应用数据占用系统盘空间，需要迁移到外接 SSD
 
 ## 核心能力

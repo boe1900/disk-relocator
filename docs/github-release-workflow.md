@@ -1,7 +1,7 @@
 # GitHub Release 发布流程
 
 本文描述仓库内 `Release` GitHub Actions 工作流的使用方式。  
-当前目标是自动发布 **macOS Apple Silicon (`aarch64`) 的 `.dmg` 安装包**，并同步发布 `app-profiles.json`。
+当前目标是自动发布 **macOS Apple Silicon (`aarch64`) + Intel (`x86_64`) 的 `.dmg` 安装包**，并同步发布 `app-profiles.json`。
 
 ## 发布模式（免费/付费）
 
@@ -55,15 +55,19 @@ Release workflow 支持两种模式：
    - `src-tauri/Cargo.toml` 的 `version`
    - 以及 tag 必须等于 `v<version>`
 2. 发布门禁：`npm run check:release`
-3. 打包目标：`--target aarch64-apple-darwin --bundles dmg`
+3. 打包目标：
+   - `--target aarch64-apple-darwin --bundles dmg`
+   - `--target x86_64-apple-darwin --bundles dmg`
 
 如果上述任一步骤失败，Release 不会发布。
 
 ## Release 产物
 
-工作流会通过 `tauri-apps/tauri-action` 自动上传 `.dmg` 到 GitHub Release。  
+工作流会通过 `tauri-apps/tauri-action` 自动上传双架构 `.dmg` 到 GitHub Release。  
 同时会把 `specs/v1/app-profiles.json` 作为 `app-profiles.json` 资产上传到同一个 Release，供客户端按固定 URL 拉取。  
-同时会把 `src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg` 作为 workflow artifact 保存，便于排障和留档。
+同时会把下列目录中的 `.dmg` 作为 workflow artifact 保存，便于排障和留档：
+- `src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg`
+- `src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg`
 
 ## 推荐操作顺序
 
@@ -84,6 +88,6 @@ Release workflow 支持两种模式：
 ## 常见失败原因
 
 1. 版本号不同步：tag 与三处 version 不一致。
-2. 目标架构错误：非 Apple Silicon 目标不会在本流程中产出。
+2. 目标架构错误：应产出 Apple Silicon + Intel 双架构资产，缺失任一架构都属于异常。
 3. 门禁失败：`check:release` 任何一步失败都会阻断发布。
 4. 付费模式开启但 secrets 缺失或不完整：workflow 会在打包前直接报错退出。
