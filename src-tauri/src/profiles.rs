@@ -969,6 +969,83 @@ mod tests {
     }
 
     #[test]
+    fn feishu_profile_has_expected_bundle_process_and_unit_paths() {
+        let profile = profile_by_id("feishu")
+            .expect("load profiles")
+            .expect("feishu profile should exist");
+        assert_eq!(profile.availability, "active");
+        assert!(
+            profile.bundle_ids.contains(&"com.electron.lark".to_string()),
+            "feishu profile should contain bundle id com.electron.lark"
+        );
+        assert!(
+            profile.process_names.contains(&"Feishu".to_string()),
+            "feishu profile should contain process name Feishu"
+        );
+        assert!(
+            profile.process_names.contains(&"Lark".to_string()),
+            "feishu profile should contain process name Lark"
+        );
+
+        let expected_units = vec![
+            (
+                "feishu-sdk-resources",
+                "media",
+                "~/Library/Application Support/LarkShell/sdk_storage/*/resources",
+                "{target_root}/AppData/Feishu/{match_1}/resources",
+            ),
+            (
+                "feishu-drive-download-tmp",
+                "cache",
+                "~/Library/Application Support/LarkShell/sdk_storage/*/drive_download_tmp",
+                "{target_root}/AppData/Feishu/{match_1}/drive_download_tmp",
+            ),
+            (
+                "feishu-profile-explorer-sw-cache",
+                "cache",
+                "~/Library/Application Support/LarkShell/aha/users/*/profile_explorer/Service Worker/CacheStorage",
+                "{target_root}/AppData/Feishu/{match_1}/profile_explorer/ServiceWorkerCacheStorage",
+            ),
+        ];
+
+        assert_eq!(
+            profile.relocation_units.len(),
+            expected_units.len(),
+            "feishu profile should include all expected migration units"
+        );
+
+        for (unit_id, category, source_path, target_path_template) in expected_units {
+            let unit = profile
+                .relocation_units
+                .iter()
+                .find(|unit| unit.unit_id == unit_id && unit.enabled)
+                .unwrap_or_else(|| panic!("feishu profile should contain enabled {unit_id}"));
+
+            assert_eq!(
+                unit.category, category,
+                "{unit_id} unit category should match profile spec"
+            );
+            assert_eq!(
+                unit.source_path, source_path,
+                "{unit_id} unit source path should match profile spec"
+            );
+            assert_eq!(
+                unit.target_path_template, target_path_template,
+                "{unit_id} unit target path template should match profile spec"
+            );
+            assert!(
+                !unit.allow_bootstrap_if_source_missing,
+                "{unit_id} unit should not allow bootstrap when source is missing"
+            );
+        }
+
+        assert!(
+            !profile.precheck_rules.allow_bootstrap_if_source_missing,
+            "feishu profile precheck should not allow bootstrap when source is missing"
+        );
+    }
+
+    #[test]
     fn active_profiles_require_enabled_units_and_valid_paths() {
         let profiles = list_profiles().expect("load profiles");
         for profile in profiles {

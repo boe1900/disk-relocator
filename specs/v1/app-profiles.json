@@ -123,6 +123,42 @@
           "allow_bootstrap_if_source_missing": false
         }
       ]
+    },
+    {
+      "app_id": "feishu",
+      "display_name": "飞书 (Feishu)",
+      "description_i18n": {
+        "zh": "迁移飞书媒体资源与网页缓存目录（不迁移聊天数据库）。",
+        "en": "Migrate Feishu media resources and web cache directories (excluding chat databases)."
+      },
+      "bundle_ids": ["com.electron.lark"],
+      "process_names": ["Feishu", "Lark"],
+      "units": [
+        {
+          "unit_id": "feishu-sdk-resources",
+          "display_name": "消息媒体资源 (resources)",
+          "category": "media",
+          "source_path": "~/Library/Application Support/LarkShell/sdk_storage/*/resources",
+          "target_path_template": "{target_root}/AppData/Feishu/{match_1}/resources",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "feishu-drive-download-tmp",
+          "display_name": "临时下载目录 (drive_download_tmp)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/LarkShell/sdk_storage/*/drive_download_tmp",
+          "target_path_template": "{target_root}/AppData/Feishu/{match_1}/drive_download_tmp",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "feishu-profile-explorer-sw-cache",
+          "display_name": "网页离线缓存 (Service Worker CacheStorage)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/LarkShell/aha/users/*/profile_explorer/Service Worker/CacheStorage",
+          "target_path_template": "{target_root}/AppData/Feishu/{match_1}/profile_explorer/ServiceWorkerCacheStorage",
+          "allow_bootstrap_if_source_missing": false
+        }
+      ]
     }
   ]
 }
