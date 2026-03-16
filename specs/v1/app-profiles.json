@@ -65,32 +65,6 @@
       ]
     },
     {
-      "app_id": "qq-nt",
-      "display_name": "QQ (NT)",
-      "description_i18n": {
-        "zh": "迁移 QQ NT 完整数据目录（含聊天记录与媒体）。",
-        "en": "Migrate QQ NT full data root (including chat records and media)."
-      },
-      "migration_warning_i18n": {
-        "zh": "⚠️ 高风险操作警告\nQQ 将进行完整核心数据目录迁移。搬迁至外接硬盘后，请绝对不要在 QQ 运行时拔出硬盘！\n拔出硬盘前，请务必先彻底退出 Mac QQ（Command + Q），否则可能导致聊天记录或文件数据损坏！",
-        "en": "⚠️ High-risk migration warning\nQQ will migrate the whole core data directory. After migration to an external disk, never unplug the disk while QQ is running.\nBefore unplugging the disk, fully quit QQ on Mac (Command + Q), otherwise chat records or files may be damaged."
-      },
-      "migration_warning_countdown_seconds": 3,
-      "bundle_ids": ["com.tencent.qq"],
-      "process_names": ["QQ"],
-      "units": [
-        {
-          "unit_id": "qq-root",
-          "display_name": "QQ完整数据根目录 (含聊天记录与媒体)",
-          "category": "root_entity",
-          "risk_level": "high",
-          "source_path": "~/Library/Containers/com.tencent.qq/Data/Library/Application Support/QQ/nt_qq_*",
-          "target_path_template": "{target_root}/AppData/QQ_NT/{match_1}",
-          "allow_bootstrap_if_source_missing": false
-        }
-      ]
-    },
-    {
       "app_id": "dingtalk",
       "display_name": "钉钉 (DingTalk)",
       "description_i18n": {

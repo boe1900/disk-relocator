@@ -14,6 +14,7 @@ const messages: Record<Locale, MessageTree> = {
       zh: "中文",
       en: "English",
       language: "语言",
+      version: "版本",
       cancelled: "取消",
       confirm: "确认",
       close: "关闭",
@@ -74,9 +75,9 @@ const messages: Record<Locale, MessageTree> = {
         migrated: "已检测到软链接迁移状态",
         ready: "可直接迁移"
       },
-      sizeLabel: "目录大小",
-      sizeLabelCurrent: "目录大小",
-      sizeLabelSaved: "已节省空间",
+      sizeLabel: "预计释放空间",
+      sizeLabelCurrent: "预计释放空间",
+      sizeLabelSaved: "已释放空间",
       pathCount: "{count} 个目录",
       pathGroup: {
         default: "默认目录",
@@ -271,6 +272,7 @@ const messages: Record<Locale, MessageTree> = {
       zh: "Chinese",
       en: "English",
       language: "Language",
+      version: "Version",
       cancelled: "Cancel",
       confirm: "Confirm",
       close: "Close",
@@ -332,9 +334,9 @@ const messages: Record<Locale, MessageTree> = {
         migrated: "Symlink migration state already detected",
         ready: "Ready to migrate"
       },
-      sizeLabel: "Directory Size",
-      sizeLabelCurrent: "Directory Size",
-      sizeLabelSaved: "Space Saved",
+      sizeLabel: "Estimated Releasable Space",
+      sizeLabelCurrent: "Estimated Releasable Space",
+      sizeLabelSaved: "Released Space",
       pathCount: "{count} directories",
       pathGroup: {
         default: "Default",

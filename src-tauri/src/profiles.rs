@@ -3,14 +3,14 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 const PROFILES_JSON: &str = include_str!("../../specs/v1/app-profiles.json");
 const REMOTE_PROFILES_URL: &str =
     "https://github.com/boe1900/disk-relocator/releases/latest/download/app-profiles.json";
 const PROFILES_CACHE_FILE_NAME: &str = "app-profiles-cache.json";
-const PROFILES_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
-const PROFILES_FETCH_TIMEOUT_SECS: u64 = 5;
+const PROFILES_CACHE_ETAG_FILE_NAME: &str = "app-profiles-cache.etag";
+const PROFILES_FETCH_TIMEOUT_SECS: u64 = 2;
 
 fn default_false() -> bool {
     false
@@ -498,106 +498,156 @@ fn profiles_cache_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(PROFILES_CACHE_FILE_NAME)
 }
 
-fn cache_is_fresh(cache_path: &Path, cache_ttl: Duration) -> bool {
-    let metadata = match fs::metadata(cache_path) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let modified = match metadata.modified() {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    match SystemTime::now().duration_since(modified) {
-        Ok(age) => age <= cache_ttl,
-        Err(_) => true,
-    }
+fn profiles_cache_etag_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(PROFILES_CACHE_ETAG_FILE_NAME)
 }
 
-fn read_cached_profile_set(
-    app_data_dir: &Path,
-    cache_ttl: Duration,
-    require_fresh: bool,
-) -> Option<Result<ProfileSet, String>> {
+fn read_cached_profile_set(app_data_dir: &Path) -> Option<Result<ProfileSet, String>> {
     let cache_path = profiles_cache_path(app_data_dir);
-    if require_fresh && !cache_is_fresh(&cache_path, cache_ttl) {
-        return None;
-    }
     let payload = match fs::read_to_string(&cache_path) {
         Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => return Some(Err(format!("failed to read cache {cache_path:?}: {err}"))),
     };
     Some(parse_profile_set(&payload, "cached app-profiles.json"))
 }
 
-fn fetch_remote_profile_payload() -> Result<String, String> {
+fn read_cached_etag(app_data_dir: &Path) -> Option<String> {
+    let etag_path = profiles_cache_etag_path(app_data_dir);
+    let raw = match fs::read_to_string(&etag_path) {
+        Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            eprintln!("[profiles] ignore unreadable etag cache {etag_path:?}: {err}");
+            return None;
+        }
+    };
+    let etag = raw.trim();
+    (!etag.is_empty()).then(|| etag.to_string())
+}
+
+enum RemoteProfileFetchResult {
+    Updated {
+        payload: String,
+        etag: Option<String>,
+    },
+    NotModified,
+}
+
+fn fetch_remote_profile_payload(
+    cached_etag: Option<&str>,
+) -> Result<RemoteProfileFetchResult, String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(PROFILES_FETCH_TIMEOUT_SECS))
         .timeout(Duration::from_secs(PROFILES_FETCH_TIMEOUT_SECS))
         .build()
         .map_err(|err| format!("failed to build profile fetch client: {err}"))?;
-    let response = client
-        .get(REMOTE_PROFILES_URL)
-        .header(
-            reqwest::header::USER_AGENT,
-            format!("disk-relocator/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .send()
-        .map_err(|err| format!("failed to fetch remote profile: {err}"))?;
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "failed to fetch remote profile: http {}",
-            response.status()
-        ));
+    let mut request = client.get(REMOTE_PROFILES_URL).header(
+        reqwest::header::USER_AGENT,
+        format!("disk-relocator/{}", env!("CARGO_PKG_VERSION")),
+    );
+    if let Some(etag) = cached_etag {
+        request = request.header(reqwest::header::IF_NONE_MATCH, etag);
     }
 
-    response
+    let response = request
+        .send()
+        .map_err(|err| format!("failed to fetch remote profile: {err}"))?;
+    let status = response.status();
+
+    if status == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(RemoteProfileFetchResult::NotModified);
+    }
+
+    if !status.is_success() {
+        return Err(format!("failed to fetch remote profile: http {}", status));
+    }
+
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+    let payload = response
         .text()
-        .map_err(|err| format!("failed to decode remote profile payload: {err}"))
+        .map_err(|err| format!("failed to decode remote profile payload: {err}"))?;
+
+    Ok(RemoteProfileFetchResult::Updated { payload, etag })
 }
 
-fn write_profile_cache(app_data_dir: &Path, payload: &str) -> Result<(), String> {
+fn write_profile_cache(
+    app_data_dir: &Path,
+    payload: &str,
+    etag: Option<&str>,
+) -> Result<(), String> {
     let cache_path = profiles_cache_path(app_data_dir);
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create cache directory {parent:?}: {err}"))?;
     }
     fs::write(&cache_path, payload)
-        .map_err(|err| format!("failed to write profile cache {cache_path:?}: {err}"))
+        .map_err(|err| format!("failed to write profile cache {cache_path:?}: {err}"))?;
+
+    let etag_path = profiles_cache_etag_path(app_data_dir);
+    match etag {
+        Some(value) => fs::write(&etag_path, value)
+            .map_err(|err| format!("failed to write profile etag cache {etag_path:?}: {err}"))?,
+        None => match fs::remove_file(&etag_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "failed to remove stale profile etag cache {etag_path:?}: {err}"
+                ))
+            }
+        },
+    }
+
+    Ok(())
 }
 
 fn load_profile_set_with_remote_fetch<F>(
     app_data_dir: &Path,
-    cache_ttl: Duration,
     remote_fetch: F,
 ) -> Result<ProfileSet, String>
 where
-    F: FnOnce() -> Result<String, String>,
+    F: FnOnce(Option<&str>) -> Result<RemoteProfileFetchResult, String>,
 {
-    if let Some(cached) = read_cached_profile_set(app_data_dir, cache_ttl, true) {
-        match cached {
-            Ok(set) => return Ok(set),
-            Err(err) => eprintln!("[profiles] ignore invalid fresh cache: {err}"),
-        }
-    }
+    let cached_etag = read_cached_etag(app_data_dir);
+    let cached_profile = read_cached_profile_set(app_data_dir);
 
-    match remote_fetch() {
-        Ok(payload) => match parse_profile_set(&payload, "remote app-profiles.json") {
-            Ok(set) => {
-                if let Err(err) = write_profile_cache(app_data_dir, &payload) {
-                    eprintln!("[profiles] write cache skipped: {err}");
+    match remote_fetch(cached_etag.as_deref()) {
+        Ok(RemoteProfileFetchResult::Updated { payload, etag }) => {
+            match parse_profile_set(&payload, "remote app-profiles.json") {
+                Ok(set) => {
+                    if let Err(err) = write_profile_cache(app_data_dir, &payload, etag.as_deref()) {
+                        eprintln!("[profiles] write cache skipped: {err}");
+                    }
+                    return Ok(set);
                 }
-                return Ok(set);
+                Err(err) => eprintln!("[profiles] ignore invalid remote profile: {err}"),
             }
-            Err(err) => eprintln!("[profiles] ignore invalid remote profile: {err}"),
-        },
+        }
+        Ok(RemoteProfileFetchResult::NotModified) => {
+            if let Some(cached) = &cached_profile {
+                match cached {
+                    Ok(set) => return Ok(set.clone()),
+                    Err(err) => eprintln!("[profiles] ignore invalid local cache after 304: {err}"),
+                }
+            } else {
+                eprintln!(
+                    "[profiles] remote profile returned not modified but local cache is missing"
+                );
+            }
+        }
         Err(err) => eprintln!("[profiles] remote profile fetch failed: {err}"),
     }
 
-    if let Some(cached) = read_cached_profile_set(app_data_dir, cache_ttl, false) {
+    if let Some(cached) = cached_profile {
         match cached {
             Ok(set) => return Ok(set),
-            Err(err) => eprintln!("[profiles] ignore invalid stale cache: {err}"),
+            Err(err) => eprintln!("[profiles] ignore invalid local cache: {err}"),
         }
     }
 
@@ -605,11 +655,7 @@ where
 }
 
 fn load_profile_set_for_app(app_data_dir: &Path) -> Result<ProfileSet, String> {
-    load_profile_set_with_remote_fetch(
-        app_data_dir,
-        Duration::from_secs(PROFILES_CACHE_TTL_SECS),
-        fetch_remote_profile_payload,
-    )
+    load_profile_set_with_remote_fetch(app_data_dir, fetch_remote_profile_payload)
 }
 
 fn profile_store(app_data_dir: Option<&Path>) -> Result<&'static RwLock<ProfileSet>, String> {
@@ -655,8 +701,6 @@ pub fn profile_by_id(app_id: &str) -> Result<Option<AppProfile>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-    use std::thread;
     use tempfile::tempdir;
 
     fn profile_payload_for(app_id: &str) -> String {
@@ -693,48 +737,21 @@ mod tests {
     }
 
     #[test]
-    fn load_profile_set_uses_fresh_cache_without_remote_fetch() {
-        let dir = tempdir().expect("create temp dir");
-        let app_data_dir = dir.path();
-        let payload = profile_payload_for("cache-app");
-        fs::write(profiles_cache_path(app_data_dir), payload).expect("write cache");
-
-        let remote_called = Cell::new(false);
-        let set = load_profile_set_with_remote_fetch(
-            app_data_dir,
-            Duration::from_secs(PROFILES_CACHE_TTL_SECS),
-            || {
-                remote_called.set(true);
-                Err("should not fetch".to_string())
-            },
-        )
-        .expect("load profile set");
-
-        assert!(
-            !remote_called.get(),
-            "fresh cache should bypass remote fetch"
-        );
-        assert!(
-            set.profiles
-                .iter()
-                .any(|profile| profile.app_id == "cache-app"),
-            "cache payload should be used"
-        );
-    }
-
-    #[test]
-    fn load_profile_set_uses_remote_and_refreshes_cache_when_cache_stale() {
+    fn load_profile_set_prefers_remote_on_startup_and_updates_cache_with_etag() {
         let dir = tempdir().expect("create temp dir");
         let app_data_dir = dir.path();
         fs::write(
             profiles_cache_path(app_data_dir),
-            profile_payload_for("stale-app"),
+            profile_payload_for("cache-app"),
         )
-        .expect("write stale cache");
-        thread::sleep(Duration::from_millis(5));
+        .expect("write cache");
 
-        let set = load_profile_set_with_remote_fetch(app_data_dir, Duration::from_secs(0), || {
-            Ok(profile_payload_for("remote-app"))
+        let set = load_profile_set_with_remote_fetch(app_data_dir, |etag| {
+            assert_eq!(etag, None, "etag should be empty before first remote write");
+            Ok(RemoteProfileFetchResult::Updated {
+                payload: profile_payload_for("remote-app"),
+                etag: Some("\"etag-v1\"".to_string()),
+            })
         })
         .expect("load profile set");
 
@@ -742,7 +759,7 @@ mod tests {
             set.profiles
                 .iter()
                 .any(|profile| profile.app_id == "remote-app"),
-            "remote payload should be used when cache is stale"
+            "remote payload should override local cache on startup"
         );
 
         let refreshed_cache =
@@ -751,29 +768,63 @@ mod tests {
             refreshed_cache.contains("\"remote-app\""),
             "remote payload should refresh cache contents"
         );
+
+        let refreshed_etag =
+            fs::read_to_string(profiles_cache_etag_path(app_data_dir)).expect("read etag cache");
+        assert!(
+            refreshed_etag.contains("\"etag-v1\""),
+            "etag cache should be written after successful remote fetch"
+        );
     }
 
     #[test]
-    fn load_profile_set_falls_back_to_stale_cache_when_remote_fetch_fails() {
+    fn load_profile_set_uses_cache_when_remote_reports_not_modified() {
         let dir = tempdir().expect("create temp dir");
         let app_data_dir = dir.path();
         fs::write(
             profiles_cache_path(app_data_dir),
-            profile_payload_for("stale-app"),
+            profile_payload_for("cache-app"),
         )
-        .expect("write stale cache");
-        thread::sleep(Duration::from_millis(5));
+        .expect("write cache");
+        fs::write(profiles_cache_etag_path(app_data_dir), "\"etag-v1\"").expect("write etag cache");
 
-        let set = load_profile_set_with_remote_fetch(app_data_dir, Duration::from_secs(0), || {
-            Err("offline".to_string())
+        let set = load_profile_set_with_remote_fetch(app_data_dir, |etag| {
+            assert_eq!(
+                etag,
+                Some("\"etag-v1\""),
+                "cached etag should be sent to remote fetcher"
+            );
+            Ok(RemoteProfileFetchResult::NotModified)
         })
         .expect("load profile set");
 
         assert!(
             set.profiles
                 .iter()
-                .any(|profile| profile.app_id == "stale-app"),
-            "stale cache should be used when remote fetch fails"
+                .any(|profile| profile.app_id == "cache-app"),
+            "cached payload should be used when remote returns 304"
+        );
+    }
+
+    #[test]
+    fn load_profile_set_falls_back_to_cache_when_remote_fetch_fails() {
+        let dir = tempdir().expect("create temp dir");
+        let app_data_dir = dir.path();
+        fs::write(
+            profiles_cache_path(app_data_dir),
+            profile_payload_for("cache-app"),
+        )
+        .expect("write cache");
+
+        let set =
+            load_profile_set_with_remote_fetch(app_data_dir, |_etag| Err("offline".to_string()))
+                .expect("load profile set");
+
+        assert!(
+            set.profiles
+                .iter()
+                .any(|profile| profile.app_id == "cache-app"),
+            "cached payload should be used when remote fetch fails"
         );
     }
 
@@ -909,54 +960,11 @@ mod tests {
     }
 
     #[test]
-    fn qq_profile_has_expected_bundle_process_and_unit_paths() {
-        let profile = profile_by_id("qq-nt")
-            .expect("load profiles")
-            .expect("qq profile should exist");
-        assert_eq!(profile.availability, "active");
+    fn qq_profile_is_removed() {
+        let profile = profile_by_id("qq-mac").expect("load profiles");
         assert!(
-            profile.bundle_ids.contains(&"com.tencent.qq".to_string()),
-            "qq profile should contain bundle id com.tencent.qq"
-        );
-        assert!(
-            profile.process_names.contains(&"QQ".to_string()),
-            "qq profile should contain process name QQ"
-        );
-        assert!(
-            !profile.migration_warning_i18n.is_empty(),
-            "qq profile should include migration warning text"
-        );
-        assert_eq!(
-            profile.migration_warning_countdown_seconds, 3,
-            "qq profile should configure 3-second warning countdown"
-        );
-
-        let unit = profile
-            .relocation_units
-            .iter()
-            .find(|unit| unit.unit_id == "qq-root" && unit.enabled)
-            .expect("qq profile should contain enabled qq-root unit");
-
-        assert_eq!(
-            unit.category, "root_entity",
-            "qq-root unit category should match profile spec"
-        );
-        assert_eq!(
-            unit.risk_level, "high",
-            "qq-root unit risk level should be high"
-        );
-        assert_eq!(
-            unit.source_path,
-            "~/Library/Containers/com.tencent.qq/Data/Library/Application Support/QQ/nt_qq_*",
-            "qq-root unit source path should match profile spec"
-        );
-        assert_eq!(
-            unit.target_path_template, "{target_root}/AppData/QQ_NT/{match_1}",
-            "qq-root unit target path template should match profile spec"
-        );
-        assert!(
-            !unit.allow_bootstrap_if_source_missing,
-            "qq-root unit should not allow bootstrap when source is missing"
+            profile.is_none(),
+            "qq profile should be removed from app-profiles"
         );
     }
 

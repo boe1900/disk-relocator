@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { defineComponent } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   confirm: vi.fn()
+}));
+
+vi.mock("@tauri-apps/api/app", () => ({
+  getVersion: vi.fn()
 }));
 
 const AppListStub = defineComponent({
@@ -150,6 +155,7 @@ function makeInvokeMock(options: {
 describe("App", () => {
   const invokeMock = vi.mocked(invoke);
   const convertFileSrcMock = vi.mocked(convertFileSrc);
+  const getVersionMock = vi.mocked(getVersion);
   const dialogConfirmMock = vi.mocked(dialogConfirm);
 
   beforeEach(() => {
@@ -157,6 +163,8 @@ describe("App", () => {
     useI18n().setLocale("zh");
     invokeMock.mockReset();
     convertFileSrcMock.mockClear();
+    getVersionMock.mockReset();
+    getVersionMock.mockResolvedValue("0.1.8");
     dialogConfirmMock.mockReset();
     dialogConfirmMock.mockResolvedValue(true);
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -193,6 +201,7 @@ describe("App", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="app-count"]').text()).toBe("1");
+    expect(wrapper.get('[data-test="app-version"]').text()).toContain("版本 v0.1.8");
     expect(convertFileSrcMock).toHaveBeenCalledWith("/Applications/WeChat.app/icon.icns");
 
     await wrapper.get('[data-test="emit-migrate"]').trigger("click");
@@ -311,7 +320,7 @@ describe("App", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-test="first-app-size"]').text()).toBe("0 B");
-    expect(wrapper.get('[data-test="first-app-size-label"]').text()).toContain("已节省空间");
+    expect(wrapper.get('[data-test="first-app-size-label"]').text()).toContain("已释放空间");
   });
 
   it("shows rollback record missing when relocation record does not exist", async () => {

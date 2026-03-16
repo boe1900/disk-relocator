@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
@@ -61,6 +62,7 @@ const relocations = ref<RelocationSummary[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const info = ref<string | null>(null);
+const appVersion = ref("");
 let infoTimer: number | null = null;
 
 const showModal = ref(false);
@@ -326,6 +328,9 @@ const sidebarItems = computed(() => [
   { key: "health", label: t("app.sidebar.health"), icon: Activity },
   { key: "logs", label: t("app.sidebar.logs"), icon: FileText }
 ]);
+const appVersionLabel = computed(() =>
+  appVersion.value ? `v${appVersion.value}` : "-"
+);
 
 async function refreshAll(): Promise<void> {
   loading.value = true;
@@ -349,6 +354,14 @@ async function refreshAll(): Promise<void> {
     error.value = t("app.messages.loadFailed", { error: formatCommandError(err) });
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadAppVersion(): Promise<void> {
+  try {
+    appVersion.value = await getVersion();
+  } catch {
+    appVersion.value = "";
   }
 }
 
@@ -447,6 +460,7 @@ function handleModalClose(): void {
 }
 
 onMounted(() => {
+  void loadAppVersion();
   void refreshAll();
 });
 
@@ -527,6 +541,9 @@ onBeforeUnmount(() => {
               {{ t("common.en") }}
             </button>
           </div>
+        </div>
+        <div class="mt-2 text-[11px] text-gray-400" data-test="app-version">
+          {{ t("common.version") }} {{ appVersionLabel }}
         </div>
       </div>
     </div>
