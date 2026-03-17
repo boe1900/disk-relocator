@@ -159,6 +159,58 @@
           "allow_bootstrap_if_source_missing": false
         }
       ]
+    },
+    {
+      "app_id": "discord",
+      "display_name": "Discord",
+      "description_i18n": {
+        "zh": "迁移 Discord 缓存与模块目录（不迁移 Local Storage/Cookies 等状态数据）。",
+        "en": "Migrate Discord caches and module directories (excluding state data like Local Storage/Cookies)."
+      },
+      "bundle_ids": ["com.hnc.Discord"],
+      "process_names": ["Discord"],
+      "units": [
+        {
+          "unit_id": "discord-cache",
+          "display_name": "网络与媒体缓存 (Cache)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/discord/Cache",
+          "target_path_template": "{target_root}/AppData/Discord/Cache",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "discord-code-cache",
+          "display_name": "脚本缓存 (Code Cache)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/discord/Code Cache",
+          "target_path_template": "{target_root}/AppData/Discord/Code Cache",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "discord-gpu-cache",
+          "display_name": "GPU 缓存 (GPUCache)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/discord/GPUCache",
+          "target_path_template": "{target_root}/AppData/Discord/GPUCache",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "discord-dawn-graphite-cache",
+          "display_name": "图形缓存 (DawnGraphiteCache)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/discord/DawnGraphiteCache",
+          "target_path_template": "{target_root}/AppData/Discord/DawnGraphiteCache",
+          "allow_bootstrap_if_source_missing": false
+        },
+        {
+          "unit_id": "discord-dawn-webgpu-cache",
+          "display_name": "图形缓存 (DawnWebGPUCache)",
+          "category": "cache",
+          "source_path": "~/Library/Application Support/discord/DawnWebGPUCache",
+          "target_path_template": "{target_root}/AppData/Discord/DawnWebGPUCache",
+          "allow_bootstrap_if_source_missing": false
+        }
+      ]
     }
   ]
 }

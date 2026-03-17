@@ -1048,6 +1048,91 @@ mod tests {
     }
 
     #[test]
+    fn discord_profile_has_expected_bundle_process_and_unit_paths() {
+        let profile = profile_by_id("discord")
+            .expect("load profiles")
+            .expect("discord profile should exist");
+        assert_eq!(profile.availability, "active");
+        assert!(
+            profile.bundle_ids.contains(&"com.hnc.Discord".to_string()),
+            "discord profile should contain bundle id com.hnc.Discord"
+        );
+        assert!(
+            profile.process_names.contains(&"Discord".to_string()),
+            "discord profile should contain process name Discord"
+        );
+
+        let expected_units = vec![
+            (
+                "discord-cache",
+                "cache",
+                "~/Library/Application Support/discord/Cache",
+                "{target_root}/AppData/Discord/Cache",
+            ),
+            (
+                "discord-code-cache",
+                "cache",
+                "~/Library/Application Support/discord/Code Cache",
+                "{target_root}/AppData/Discord/Code Cache",
+            ),
+            (
+                "discord-gpu-cache",
+                "cache",
+                "~/Library/Application Support/discord/GPUCache",
+                "{target_root}/AppData/Discord/GPUCache",
+            ),
+            (
+                "discord-dawn-graphite-cache",
+                "cache",
+                "~/Library/Application Support/discord/DawnGraphiteCache",
+                "{target_root}/AppData/Discord/DawnGraphiteCache",
+            ),
+            (
+                "discord-dawn-webgpu-cache",
+                "cache",
+                "~/Library/Application Support/discord/DawnWebGPUCache",
+                "{target_root}/AppData/Discord/DawnWebGPUCache",
+            ),
+        ];
+
+        assert_eq!(
+            profile.relocation_units.len(),
+            expected_units.len(),
+            "discord profile should include all expected migration units"
+        );
+
+        for (unit_id, category, source_path, target_path_template) in expected_units {
+            let unit = profile
+                .relocation_units
+                .iter()
+                .find(|unit| unit.unit_id == unit_id && unit.enabled)
+                .unwrap_or_else(|| panic!("discord profile should contain enabled {unit_id}"));
+
+            assert_eq!(
+                unit.category, category,
+                "{unit_id} unit category should match profile spec"
+            );
+            assert_eq!(
+                unit.source_path, source_path,
+                "{unit_id} unit source path should match profile spec"
+            );
+            assert_eq!(
+                unit.target_path_template, target_path_template,
+                "{unit_id} unit target path template should match profile spec"
+            );
+            assert!(
+                !unit.allow_bootstrap_if_source_missing,
+                "{unit_id} unit should not allow bootstrap when source is missing"
+            );
+        }
+
+        assert!(
+            !profile.precheck_rules.allow_bootstrap_if_source_missing,
+            "discord profile precheck should not allow bootstrap when source is missing"
+        );
+    }
+
+    #[test]
     fn active_profiles_require_enabled_units_and_valid_paths() {
         let profiles = list_profiles().expect("load profiles");
         for profile in profiles {
