@@ -1,6 +1,6 @@
 {
   "schema_version": "2.1.0",
-  "updated_at": "2026-03-16",
+  "updated_at": "2026-03-17",
   "engine_defaults": {
     "app_level": {
       "availability": "active",
@@ -26,8 +26,8 @@
         "en": "Migrate WeChat core data directory (xwechat_files)."
       },
       "migration_warning_i18n": {
-        "zh": "⚠️ 高风险操作警告\n微信将进行整体核心数据迁移。搬迁至外接硬盘后，请绝对不要在微信运行时拔出硬盘！\n拔出硬盘前，请务必先彻底退出 Mac 微信（Command + Q），否则将导致聊天记录永久损坏！",
-        "en": "⚠️ High-risk migration warning\nWeChat will migrate the whole core data directory. After migration to an external disk, never unplug the disk while WeChat is running.\nBefore unplugging the disk, fully quit WeChat on Mac (Command + Q), otherwise chat records may be permanently damaged."
+        "zh": "⚠️ 高风险操作警告\n微信将进行整体核心数据迁移。搬迁至外接硬盘后，请绝对不要在微信运行时拔出硬盘！\n拔出硬盘前，请务必先彻底退出 Mac 微信（Command + Q），否则将导致聊天记录永久损坏！\n\n迁移完成后，请先彻底退出 Mac 微信（Command + Q）。\n然后打开终端执行：sudo codesign --sign - --force --deep /Applications/WeChat.app\n微信升级后，请再执行一次该命令。否则微信可能会在 app_data 中初始化新的 xwechat_files，导致原聊天记录不可见。",
+        "en": "⚠️ High-risk migration warning\nWeChat will migrate the whole core data directory. After migration to an external disk, never unplug the disk while WeChat is running.\nBefore unplugging the disk, fully quit WeChat on Mac (Command + Q), otherwise chat records may be permanently damaged.\n\nAfter migration, fully quit WeChat on Mac first (Command + Q).\nThen run in Terminal: sudo codesign --sign - --force --deep /Applications/WeChat.app\nAfter each WeChat update, run this command again. Otherwise WeChat may initialize a new xwechat_files under app_data, causing previous chat history to appear missing."
       },
       "migration_warning_countdown_seconds": 3,
       "bundle_ids": ["com.tencent.xinWeChat"],
