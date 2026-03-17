@@ -1,82 +1,109 @@
 # Disk Relocator
 
-Disk Relocator 是一个基于 Vue 3 + Tauri + Rust 的 macOS 桌面工具，用于把大体积应用数据从系统盘迁移到外接盘，并通过软链接保持应用继续可用。
+把聊天软件等大目录搬到外接盘，释放 macOS 系统盘空间；需要时可恢复回系统盘。
 
-## 适用范围
+## 背景定位（先看这个）
 
-- 平台：macOS（支持 Apple Silicon 与 Intel）
-- 典型场景：微信等应用数据占用系统盘空间，需要迁移到外接 SSD
+这个工具主要面向：
 
-## 核心能力
+- 丐版 Mac mini / 小容量 Mac（系统盘长期紧张）
+- 外接 SSD 长期挂载在同一台机器上使用
+- 希望把微信、Telegram、钉钉、飞书、Discord 等目录迁到外盘
 
-- 应用数据目录扫描（基于 profile + 文件系统实际检测）
-- 一键迁移（真实文件操作，不是纯 Mock）
-- 软链接切换与持久化记录
-- 一键回滚
-- 健康检查（挂载状态、链接可用性）
-- 操作日志（用户可读的迁移/回滚结果）
+不建议用于：
 
-## 快速开始（开发）
+- 经常拔插硬盘、经常移动办公的场景
+- 需要“随时脱离外接盘也完全不受影响”的场景
 
-1. 安装依赖：
-   - `npm install`
-2. 启动桌面开发模式：
-   - `npm run tauri dev`
-3. 质量检查：
-   - `npm run check:frontend`
-   - `npm run check:rust`
-   - `npm run check:release`
+一句话：**更适合固定工位、长期外挂盘，不适合高频移动场景。**
 
-## App Profiles 策略
+## 使用前准备
 
-当前版本优先加载远程 profile：  
-`https://github.com/boe1900/disk-relocator/releases/latest/download/app-profiles.json`  
-并按 `远程缓存 -> 本地缓存 -> 内置 profile` 回退。  
-新增 app 画像的标准流程是：更新 `specs/v1/app-profiles.json` 并随 Release 发布同名资产。
+1. 准备一个稳定的外接 SSD（建议 APFS）。
+2. 迁移前先关闭目标应用（尤其是微信）。
+3. 迁移过程中不要拔盘，使用中也尽量保持外盘已挂载。
 
-### 新增 App 画像流程
+## 5 分钟上手
 
-1. 修改 `specs/v1/app-profiles.json`。
-2. 本地执行质量检查：
-   - `npm run check:frontend`
-   - `npm run check:rust`
-   - `npm run check:release`
-3. 更新版本号（需保持三处一致）：
-   - `package.json`
-   - `src-tauri/Cargo.toml`
-   - `src-tauri/tauri.conf.json`
-4. 提交并发布新版本（见下方发布流程）。
+1. 打开应用，点击`刷新扫描`。
+2. 在`应用列表`里找到目标应用，点击`搬迁外存`。
+3. 在弹窗里确认迁移目录、选择目标外接盘，点击`开始迁移`。
+4. 迁移后到`健康检查`确认状态正常。
+5. 需要恢复时，在应用卡片点击`恢复到系统`。
 
-## 发布流程（GitHub Release）
+## 当前支持的应用
 
-- 触发方式 A（推荐）：推送语义化 tag（`vX.Y.Z`），自动触发 `.github/workflows/release.yml`。
-- 触发方式 B：在 GitHub Actions 手动运行 `Release` 工作流（`workflow_dispatch`）。
+- WeChat（Non-MAS）
+- Telegram（macOS 原生版）
+- 钉钉（DingTalk）
+- 飞书（Feishu / Lark）
+- Discord
 
-发布工作流会自动执行 `npm run check:release`，并上传：
-- `.dmg` 安装包
-- `app-profiles.json`（用于客户端远程画像拉取）
+说明：实际可用应用列表以线上发布的 `app-profiles.json` 为准。
+如需新增应用支持，欢迎在 [Issues](https://github.com/boe1900/disk-relocator/issues) 提交应用名称、版本号、数据目录路径与使用场景。
 
-## 使用流程（用户视角）
+## 微信特别说明（务必执行）
 
-1. 打开应用并点击「刷新扫描」。
-2. 在「应用列表」选择可迁移应用，点击「搬迁外存」。
-3. 选择目标外接盘与目标路径，确认执行。
-4. 迁移完成后在「健康检查」确认状态为健康。
-5. 需要恢复时，在对应记录执行「回滚」。
+微信迁移完成后：
 
-## 安装与首次打开（当前未签名版本）
+1. 先彻底退出微信（`Command + Q`）
+2. 在终端执行：
 
-由于当前未使用 Apple Developer 签名/公证，macOS 可能拦截首次打开。按以下步骤操作即可使用。
+```bash
+sudo codesign --sign - --force --deep /Applications/WeChat.app
+```
 
-1. 下载并挂载 `.dmg`，将 `Disk Relocator.app` 拖到 `/Applications`。
-2. 首次打开时，先在「应用程序」中右键应用，选择「打开」。
-3. 若仍被拦截，到「系统设置 -> 隐私与安全性」，在底部点击「仍要打开」。
+微信每次升级后，建议再执行一次上面命令，避免微信在 `app_data` 下重新初始化 `xwechat_files` 导致历史记录不可见。
 
-如果系统依旧阻止启动，可在终端执行：
+## 截图预览
+
+应用列表（扫描与迁移入口）：
+
+![应用列表](docs/screenshots/app-list.png)
+
+迁移弹窗（选择目标盘并确认迁移单元）：
+
+![迁移弹窗](docs/screenshots/migration-dialog.png)
+
+微信高风险提醒（迁移前）：
+
+![微信高风险提醒](docs/screenshots/wechat-risk-warning.png)
+
+健康检查（查看挂载与软链接状态）：
+
+![健康检查](docs/screenshots/health-check.png)
+
+操作记录（查看迁移/回滚结果）：
+
+![操作记录](docs/screenshots/operation-log.png)
+
+## 下载与安装
+
+1. 在 [Releases](https://github.com/boe1900/disk-relocator/releases) 下载最新 `.dmg`。
+2. 拖动 `Disk Relocator.app` 到 `/Applications`。
+3. 首次打开如被拦截：右键应用 -> `打开`。
+
+如果仍被阻止，可执行：
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/"Disk Relocator.app"
 open -a "Disk Relocator"
 ```
 
-注意：每次下载的新版本如果再次被标记隔离，可能需要重复一次上述步骤。
+## 常见问题
+
+1. 迁移后应用打不开或数据异常怎么办？
+   - 先确认外接盘已挂载；
+   - 到`健康检查`查看异常；
+   - 必要时执行`恢复到系统`。
+2. 外接盘临时断开会怎样？
+   - 软链接目标不可用时，应用可能异常；
+   - 重新挂载后可恢复，或直接回滚到系统盘。
+3. 这个工具是否适合笔记本经常移动场景？
+   - 不建议。它更适合固定工位 + 长期外接盘。
+
+## 文档
+
+- [FAQ](docs/faq.md)
+- [健康检查、修复与回滚指南](docs/health-fix-and-rollback-guide.md)
+- [微信验证说明](docs/validation-wechat.md)
