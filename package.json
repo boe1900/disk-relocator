@@ -2,6 +2,7 @@
   "name": "disk-relocator",
   "private": true,
   "version": "0.1.8",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
