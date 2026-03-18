@@ -57,8 +57,13 @@ sudo codesign --sign - --force --deep /Applications/WeChat.app
 
 ### 微信截图权限重置（重点）
 
-为了让微信能够突破苹果极其严格的沙盒限制，稳定运行在外接硬盘上，Data Dock 在底层会对微信的系统安全签名进行重构。  
-这会触发 macOS 隐私保护机制，系统可能重置微信的截图权限（屏幕录制权限）。
+执行下面这条命令后：
+
+```bash
+sudo codesign --sign - --force --deep /Applications/WeChat.app
+```
+
+macOS 可能触发隐私保护机制，重置微信的截图权限（屏幕录制权限），因此需要重新设置一次授权。
 
 修复只需约 1 分钟：
 
